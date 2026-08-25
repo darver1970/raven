@@ -3,24 +3,171 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync, spawn } = require('node:child_process');
 
-const FIXED_ROOT = 'C:\\Raven';
+const WINDOWS_POWERSHELL = path.join(
+  process.env.SystemRoot || 'C:\\Windows',
+  'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'
+);
 const INSTALL_CONFIG = path.join(process.env.LOCALAPPDATA || path.dirname(process.execPath), 'Raven', 'install-path.txt');
 let SAVED_ROOT = '';
 try { SAVED_ROOT = fs.readFileSync(INSTALL_CONFIG, 'utf8').trim(); } catch {}
-const INSTALLED_ROOT = SAVED_ROOT && path.isAbsolute(SAVED_ROOT) ? path.resolve(SAVED_ROOT) : FIXED_ROOT;
+const EXECUTABLE_DIRECTORY = path.dirname(process.execPath);
+const IS_NSIS_INSTALL = app.isPackaged
+  && !process.env.PORTABLE_EXECUTABLE_DIR
+  && path.basename(EXECUTABLE_DIRECTORY).toLowerCase() !== 'desktop';
+const SAVED_ROOT_IS_VALID = SAVED_ROOT
+  && path.isAbsolute(SAVED_ROOT)
+  && fs.existsSync(path.join(path.resolve(SAVED_ROOT), 'raven_control.py'));
+const EXECUTABLE_ROOT = IS_NSIS_INSTALL
+  ? EXECUTABLE_DIRECTORY
+  : app.isPackaged && path.basename(EXECUTABLE_DIRECTORY).toLowerCase() === 'desktop'
+    ? path.resolve(EXECUTABLE_DIRECTORY, '..')
+    : 'C:\\Raven';
+const INSTALLED_ROOT = IS_NSIS_INSTALL
+  ? path.resolve(EXECUTABLE_ROOT)
+  : SAVED_ROOT_IS_VALID
+    ? path.resolve(SAVED_ROOT)
+    : path.resolve(EXECUTABLE_ROOT);
 const INSTALL_MARKER = path.join(INSTALLED_ROOT, '.raven-installing');
 const BUNDLED_PROJECT = app.isPackaged ? path.join(process.resourcesPath, 'raven-project') : '';
+let bootstrapInProgress = false;
+let launcherDelegationInProgress = false;
 
-if (app.isPackaged && !process.env.RAVEN_HOME && fs.existsSync(path.join(BUNDLED_PROJECT, 'install.ps1')) && (!fs.existsSync(path.join(INSTALLED_ROOT, 'raven_control.py')) || fs.existsSync(INSTALL_MARKER))) {
+if (IS_NSIS_INSTALL && !process.env.RAVEN_HOME && fs.existsSync(path.join(BUNDLED_PROJECT, 'install.ps1')) && (!fs.existsSync(path.join(INSTALLED_ROOT, 'raven_control.py')) || fs.existsSync(INSTALL_MARKER))) {
+  bootstrapInProgress = true;
   const installer = path.join(BUNDLED_PROJECT, 'install.ps1');
-  const escapedInstaller = installer.replace(/'/g, "''");
-  const command = `Start-Process -FilePath powershell.exe -Verb RunAs -ArgumentList @('-NoProfile','-NoExit','-ExecutionPolicy','Bypass','-File','${escapedInstaller}')`;
-  const child = spawn('powershell.exe', ['-NoProfile', '-Command', command], { detached: true, windowsHide: true, stdio: 'ignore' });
-  child.unref();
-  process.exit(0);
+  const bootstrapLogDirectory = path.join(process.env.LOCALAPPDATA || INSTALLED_ROOT, 'Raven', 'logs');
+  const bootstrapLog = path.join(bootstrapLogDirectory, 'bootstrap.log');
+  fs.mkdirSync(bootstrapLogDirectory, { recursive: true });
+  fs.appendFileSync(
+    bootstrapLog,
+    `${new Date().toISOString()} installer=${installer} target=${INSTALLED_ROOT}\n`,
+    'utf8'
+  );
+  const quotePowerShell = value => `'${String(value).replace(/'/g, "''")}'`;
+  const installerArguments = [
+    `& ${quotePowerShell(installer)}`,
+    `-InstallPath ${quotePowerShell(INSTALLED_ROOT)}`,
+    '-NoLaunch'
+  ];
+  if (process.env.RAVEN_INSTALL_SKIP_MODEL === '1') installerArguments.push('-SkipModel');
+  const installerInvocation = [
+    "$ErrorActionPreference = 'Stop'",
+    installerArguments.join(' '),
+    'exit $LASTEXITCODE'
+  ].join('; ');
+  const encodedInstallerInvocation = Buffer.from(installerInvocation, 'utf16le').toString('base64');
+  const elevatedCommand = [
+    `$installerArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', ${quotePowerShell(encodedInstallerInvocation)})`,
+    `try { $installerProcess = Start-Process -FilePath ${quotePowerShell(WINDOWS_POWERSHELL)} -Verb RunAs -ArgumentList $installerArguments -Wait -PassThru; exit $installerProcess.ExitCode } catch { exit 1223 }`
+  ].join('; ');
+  const child = spawn(WINDOWS_POWERSHELL, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', elevatedCommand], {
+    cwd: BUNDLED_PROJECT,
+    detached: false,
+    windowsHide: true,
+    stdio: 'ignore'
+  });
+  child.once('spawn', () => {
+    fs.appendFileSync(bootstrapLog, `${new Date().toISOString()} installer_process_started pid=${child.pid}\n`, 'utf8');
+  });
+  child.once('close', code => {
+    fs.appendFileSync(bootstrapLog, `${new Date().toISOString()} installer_process_finished code=${code}\n`, 'utf8');
+    if (code !== 0) {
+      app.whenReady().then(() => {
+        dialog.showErrorBox(
+          code === 1223 ? 'Instalace Raven byla zrušena' : 'Instalace Raven selhala',
+          `Instalace nebyla dokončena. Podrobnosti jsou v ${bootstrapLog}`
+        );
+        app.exit(1);
+      });
+      return;
+    }
+    const launcher = path.join(INSTALLED_ROOT, 'spustit-raven.ps1');
+    if (!fs.existsSync(launcher)) {
+      fs.appendFileSync(bootstrapLog, `${new Date().toISOString()} launcher_missing=${launcher}\n`, 'utf8');
+      app.whenReady().then(() => dialog.showErrorBox(
+        'Raven byl nainstalován neúplně',
+        `Spouštěcí soubor nebyl nalezen. Podrobnosti jsou v ${bootstrapLog}`
+      )).finally(() => app.exit(1));
+      return;
+    }
+    const launcherProcess = spawn(
+      WINDOWS_POWERSHELL,
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', launcher],
+      { cwd: INSTALLED_ROOT, detached: false, windowsHide: true, stdio: 'ignore' }
+    );
+    launcherProcess.once('spawn', () => {
+      fs.appendFileSync(bootstrapLog, `${new Date().toISOString()} launcher_started pid=${launcherProcess.pid}\n`, 'utf8');
+    });
+    launcherProcess.once('close', launcherCode => {
+      fs.appendFileSync(bootstrapLog, `${new Date().toISOString()} launcher_finished code=${launcherCode}\n`, 'utf8');
+      if (launcherCode === 0) {
+        app.exit(0);
+        return;
+      }
+      app.whenReady().then(() => dialog.showErrorBox(
+        'Raven je nainstalován, ale spuštění selhalo',
+        `Spouštěcí skript skončil kódem ${launcherCode}. Podrobnosti jsou v ${bootstrapLog}`
+      )).finally(() => app.exit(1));
+    });
+    launcherProcess.once('error', error => {
+      fs.appendFileSync(bootstrapLog, `${new Date().toISOString()} launcher_error=${error.stack || error}\n`, 'utf8');
+      app.whenReady().then(() => dialog.showErrorBox(
+        'Raven je nainstalován, ale nelze jej spustit',
+        `Použijte zástupce Raven 1.0 na ploše. Podrobnosti jsou v ${bootstrapLog}`
+      )).finally(() => app.exit(1));
+    });
+  });
+  child.once('error', error => {
+    fs.appendFileSync(bootstrapLog, `${new Date().toISOString()} installer_process_error=${error.stack || error}\n`, 'utf8');
+    app.whenReady().then(() => dialog.showErrorBox(
+      'Instalaci Raven nelze spustit',
+      `PowerShell instalátor se nepodařilo spustit. Podrobnosti jsou v ${bootstrapLog}`
+    )).finally(() => app.exit(1));
+  });
 }
 
-const ROOT = process.env.RAVEN_HOME
+if (
+  IS_NSIS_INSTALL
+  && !bootstrapInProgress
+  && fs.existsSync(path.join(INSTALLED_ROOT, 'raven_control.py'))
+  && fs.existsSync(path.join(INSTALLED_ROOT, 'spustit-raven.ps1'))
+) {
+  launcherDelegationInProgress = true;
+  const launcherLogDirectory = path.join(process.env.LOCALAPPDATA || INSTALLED_ROOT, 'Raven', 'logs');
+  const launcherWrapperLog = path.join(launcherLogDirectory, 'wrapper.log');
+  fs.mkdirSync(launcherLogDirectory, { recursive: true });
+  const launcher = path.join(INSTALLED_ROOT, 'spustit-raven.ps1');
+  const launcherProcess = spawn(
+    WINDOWS_POWERSHELL,
+    ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', launcher],
+    { cwd: INSTALLED_ROOT, detached: false, windowsHide: true, stdio: 'ignore' }
+  );
+  launcherProcess.once('spawn', () => {
+    fs.appendFileSync(launcherWrapperLog, `${new Date().toISOString()} launcher_started pid=${launcherProcess.pid}\n`, 'utf8');
+  });
+  launcherProcess.once('close', launcherCode => {
+    fs.appendFileSync(launcherWrapperLog, `${new Date().toISOString()} launcher_finished code=${launcherCode}\n`, 'utf8');
+    if (launcherCode === 0) {
+      app.exit(0);
+      return;
+    }
+    app.whenReady().then(() => dialog.showErrorBox(
+      'Raven se nepodařilo spustit',
+      `Spouštěcí skript skončil kódem ${launcherCode}. Podrobnosti jsou v ${launcherWrapperLog}`
+    )).finally(() => app.exit(1));
+  });
+  launcherProcess.once('error', error => {
+    fs.appendFileSync(launcherWrapperLog, `${new Date().toISOString()} launcher_error=${error.stack || error}\n`, 'utf8');
+    app.whenReady().then(() => dialog.showErrorBox(
+      'Raven nelze spustit',
+      `Spouštěcí skript selhal. Podrobnosti jsou v ${launcherWrapperLog}`
+    )).finally(() => app.exit(1));
+  });
+}
+
+const ROOT = bootstrapInProgress
+  ? INSTALLED_ROOT
+  : process.env.RAVEN_HOME
   ? path.resolve(process.env.RAVEN_HOME)
   : app.isPackaged && fs.existsSync(path.join(INSTALLED_ROOT, 'raven_control.py'))
     ? INSTALLED_ROOT
@@ -28,7 +175,9 @@ const ROOT = process.env.RAVEN_HOME
       ? path.resolve(path.dirname(process.execPath), '..')
       : path.resolve(__dirname, '..');
 const RUNTIME = path.join(ROOT, 'runtime');
-const PROFILE = path.join(RUNTIME, 'electron-profile');
+const PROFILE = bootstrapInProgress
+  ? path.join(process.env.LOCALAPPDATA || INSTALLED_ROOT, 'Raven', 'bootstrap-profile')
+  : path.join(RUNTIME, 'electron-profile');
 const QUARANTINE = path.join(RUNTIME, 'quarantine');
 const SNAPSHOTS = path.join(RUNTIME, 'snapshots');
 const HUD_URL = 'http://127.0.0.1:5174/?desktop=electron&hud_version=1.0&asset_revision=raven-8';
@@ -40,10 +189,12 @@ let browserBounds = { x: 0, y: 0, width: 0, height: 0 };
 let activeTabId = '';
 const tabs = new Map();
 
-fs.mkdirSync(PROFILE, { recursive: true });
-fs.mkdirSync(QUARANTINE, { recursive: true });
-fs.mkdirSync(SNAPSHOTS, { recursive: true });
-app.setPath('userData', PROFILE);
+if (!launcherDelegationInProgress) fs.mkdirSync(PROFILE, { recursive: true });
+if (!bootstrapInProgress && !launcherDelegationInProgress) {
+  fs.mkdirSync(QUARANTINE, { recursive: true });
+  fs.mkdirSync(SNAPSHOTS, { recursive: true });
+}
+if (!launcherDelegationInProgress) app.setPath('userData', PROFILE);
 app.setName('Raven 1.0');
 app.setAppUserModelId('cz.raven.desktop');
 const MAIN_LOG = path.join(RUNTIME, 'electron-main.log');
@@ -51,9 +202,11 @@ const writeLog = value => { try { fs.appendFileSync(MAIN_LOG, `${new Date().toIS
 process.on('uncaughtException', error => writeLog(`uncaughtException ${error.stack || error}`));
 process.on('unhandledRejection', error => writeLog(`unhandledRejection ${error?.stack || error}`));
 writeLog(`start packaged=${app.isPackaged} root=${ROOT}`);
-const singleInstance = app.requestSingleInstanceLock();
-if (!singleInstance) app.quit();
-app.on('second-instance', () => { if (mainWindow) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.show(); mainWindow.focus(); } });
+if (!bootstrapInProgress && !launcherDelegationInProgress) {
+  const singleInstance = app.requestSingleInstanceLock();
+  if (!singleInstance) app.quit();
+  app.on('second-instance', () => { if (mainWindow) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.show(); mainWindow.focus(); } });
+}
 
 function safeProjectPath(relative = '') {
   const resolved = path.resolve(ROOT, String(relative || ''));
@@ -183,6 +336,7 @@ function activeTab() {
 }
 
 function installHandlers() {
+  ipcMain.handle('app:root', () => ROOT);
   ipcMain.handle('window:close', event => BrowserWindow.fromWebContents(event.sender)?.close());
   ipcMain.handle('window:minimize', event => BrowserWindow.fromWebContents(event.sender)?.minimize());
   ipcMain.handle('window:maximize', event => { const win = BrowserWindow.fromWebContents(event.sender); if (win) win.isMaximized() ? win.unmaximize() : win.maximize(); });
@@ -298,12 +452,14 @@ function createMainWindow() {
   createTab();
 }
 
-app.whenReady().then(() => {
-  session.fromPartition('persist:raven-web').on('will-download', (_event, item) => {
-    const safeName = path.basename(item.getFilename()).replace(/[^a-z0-9._-]/gi, '_');
-    item.setSavePath(path.join(QUARANTINE, `${Date.now()}-${safeName}`));
-  });
-  installHandlers(); createMainWindow();
-  writeLog('main window created');
-}).catch(error => { writeLog(`ready failed ${error.stack || error}`); app.quit(); });
-app.on('window-all-closed', () => app.quit());
+if (!bootstrapInProgress && !launcherDelegationInProgress) {
+  app.whenReady().then(() => {
+    session.fromPartition('persist:raven-web').on('will-download', (_event, item) => {
+      const safeName = path.basename(item.getFilename()).replace(/[^a-z0-9._-]/gi, '_');
+      item.setSavePath(path.join(QUARANTINE, `${Date.now()}-${safeName}`));
+    });
+    installHandlers(); createMainWindow();
+    writeLog('main window created');
+  }).catch(error => { writeLog(`ready failed ${error.stack || error}`); app.quit(); });
+  app.on('window-all-closed', () => app.quit());
+}

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import urllib.request
 from pathlib import Path
 
@@ -23,6 +24,8 @@ def request(path: str, payload: dict | None = None) -> dict:
 
 
 def test_raven_chat_really_creates_and_verifies_desktop_file() -> None:
+    if os.environ.get("RAVEN_LIVE_TEST") != "1":
+        pytest.skip("Živý test vyžaduje spuštěný Raven a RAVEN_LIVE_TEST=1.")
     target: Path = known_desktop() / "test.txt"
     if target.exists():
         pytest.skip("Na ploše už existuje uživatelův test.txt; nesmí být přepsán.")

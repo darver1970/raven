@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 const invoke = (channel, payload) => ipcRenderer.invoke(channel, payload);
 contextBridge.exposeInMainWorld('ravenDesktop', {
+  rootPath: () => invoke('app:root'),
   close: () => invoke('window:close'),
   minimize: () => invoke('window:minimize'),
   maximize: () => invoke('window:maximize'),

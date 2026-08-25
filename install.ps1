@@ -10,14 +10,54 @@
 [CmdletBinding()]
 param(
     [string]$InstallPath,
-    [switch]$SkipModel
+    [switch]$SkipModel,
+    [switch]$NoLaunch
 )
 
 $ErrorActionPreference = 'Stop'
 $sourceRoot = $PSScriptRoot
+$installLogDirectory = Join-Path $env:LOCALAPPDATA 'Raven\logs'
+New-Item -ItemType Directory -Path $installLogDirectory -Force | Out-Null
+$installLog = Join-Path $installLogDirectory 'install-latest.log'
+try {
+    Start-Transcript -LiteralPath $installLog -Force | Out-Null
+} catch {
+    Write-Warning "Instalační protokol nelze otevřít: $($_.Exception.Message)"
+}
+
+trap {
+    Write-Host ''
+    Write-Host 'INSTALACE RAVEN SELHALA' -ForegroundColor Red
+    Write-Host $_.Exception.Message -ForegroundColor Red
+    Write-Host "Podrobný protokol: $installLog" -ForegroundColor Yellow
+    try { Stop-Transcript | Out-Null } catch {}
+    if (-not $env:RAVEN_INSTALL_NONINTERACTIVE) {
+        Read-Host 'Stisknutím Enter zavřete toto okno'
+    }
+    exit 1
+}
 
 function Write-Step([string]$Message) {
     Write-Host "[RAVEN] $Message" -ForegroundColor Cyan
+}
+
+function Invoke-NativeChecked {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $false)][string[]]$Arguments = @(),
+        [Parameter(Mandatory = $true)][string]$FailureMessage
+    )
+    $previousPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        & $FilePath @Arguments 2>&1 | ForEach-Object { Write-Host $_ }
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousPreference
+    }
+    if ($exitCode -ne 0) {
+        throw "$FailureMessage (kód $exitCode)."
+    }
 }
 
 function Assert-Command([string]$Name) {
@@ -54,17 +94,31 @@ function Copy-RavenFiles([string]$From, [string]$To) {
 function Refresh-ProcessPath {
     $machine = [Environment]::GetEnvironmentVariable('Path', 'Machine')
     $user = [Environment]::GetEnvironmentVariable('Path', 'User')
-    $env:PATH = "$machine;$user"
+    $env:PATH = [Environment]::ExpandEnvironmentVariables("$machine;$user")
+}
+
+function Get-WingetCommand {
+    $command = Get-Command winget.exe -ErrorAction SilentlyContinue
+    if ($command -and (Test-Path -LiteralPath $command.Source -PathType Leaf)) {
+        return $command
+    }
+    $userAlias = Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps\winget.exe'
+    if (Test-Path -LiteralPath $userAlias -PathType Leaf) {
+        return Get-Command $userAlias -ErrorAction SilentlyContinue
+    }
+    return $null
 }
 
 function Ensure-Node {
     $command = Get-Command node.exe -ErrorAction SilentlyContinue
     if (-not $command) {
-        $winget = Get-Command winget -ErrorAction SilentlyContinue
+        $winget = Get-WingetCommand
         if (-not $winget) { throw 'Chybí Node.js 22+ a winget není dostupný.' }
         Write-Step 'Instaluji bezplatný Node.js LTS.'
-        & $winget.Source install --id OpenJS.NodeJS.LTS --silent --accept-source-agreements --accept-package-agreements --disable-interactivity
-        if ($LASTEXITCODE -ne 0) { throw 'Instalace Node.js LTS selhala.' }
+        Invoke-NativeChecked -FilePath $winget.Source -Arguments @(
+            'install', '--id', 'OpenJS.NodeJS.LTS', '--silent', '--accept-source-agreements',
+            '--accept-package-agreements', '--disable-interactivity'
+        ) -FailureMessage 'Instalace Node.js LTS selhala'
         Refresh-ProcessPath
         $command = Get-Command node.exe -ErrorAction SilentlyContinue
         if (-not $command -and (Test-Path -LiteralPath "$env:ProgramFiles\nodejs\node.exe")) {
@@ -76,6 +130,161 @@ function Ensure-Node {
     $version = [Version]((& $command.Source --version) -replace '^v', '')
     if ($version.Major -lt 22) { throw "Raven vyžaduje Node.js 22+, nalezena verze $version." }
     return $command
+}
+
+function Find-CompatiblePython {
+    $candidates = New-Object System.Collections.Generic.List[string]
+    $launcher = Get-Command py.exe -ErrorAction SilentlyContinue
+    if ($launcher) {
+        try {
+            $launcherResult = & $launcher.Source -3.13 -c 'import sys; print(sys.executable)' 2>$null
+            if ($LASTEXITCODE -eq 0 -and $launcherResult) {
+                $candidates.Add(([string]$launcherResult).Trim())
+            }
+        } catch {}
+    }
+    foreach ($candidate in @(
+        (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python313\python.exe'),
+        (Join-Path $env:ProgramFiles 'Python313\python.exe')
+    )) {
+        if ($candidate) { $candidates.Add($candidate) }
+    }
+    $pythonCommand = Get-Command python.exe -ErrorAction SilentlyContinue
+    if ($pythonCommand) { $candidates.Add($pythonCommand.Source) }
+
+    foreach ($candidate in $candidates | Select-Object -Unique) {
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+        try {
+            $versionText = & $candidate --version 2>&1
+            if ($LASTEXITCODE -ne 0) { continue }
+            $match = [regex]::Match([string]$versionText, 'Python\s+3\.(1[0-3])(?:\.|$)')
+            if ($match.Success) { return [System.IO.Path]::GetFullPath($candidate) }
+        } catch {}
+    }
+    return $null
+}
+
+function Ensure-CompatiblePython {
+    $python = Find-CompatiblePython
+    if (-not $python) {
+        $winget = Get-WingetCommand
+        if (-not $winget) {
+            throw 'Chybí kompatibilní Python 3.10-3.13 a winget není dostupný.'
+        }
+        Write-Step 'Instaluji bezplatný Python 3.13.'
+        Invoke-NativeChecked -FilePath $winget.Source -Arguments @(
+            'install', '--id', 'Python.Python.3.13', '--exact', '--scope', 'user', '--silent',
+            '--accept-source-agreements', '--accept-package-agreements', '--disable-interactivity'
+        ) -FailureMessage 'Instalace Pythonu 3.13 selhala'
+        Refresh-ProcessPath
+        $python = Find-CompatiblePython
+    }
+    if (-not $python) { throw 'Python 3.13 se po instalaci nepodařilo najít.' }
+
+    $pythonDirectory = Split-Path -Parent $python
+    $windowsApps = [System.IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps')).TrimEnd('\')
+    $filteredPath = $env:PATH -split ';' | Where-Object {
+        if (-not $_) { return $false }
+        try {
+            return [System.IO.Path]::GetFullPath($_).TrimEnd('\') -ne $windowsApps
+        } catch {
+            return $true
+        }
+    }
+    $env:PATH = "$pythonDirectory;$($filteredPath -join ';')"
+    Write-Step "Používám kompatibilní Python: $python"
+    return $python
+}
+
+function Import-VisualStudioBuildEnvironment {
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+    if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) { return $false }
+    $installationPath = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+    if ($LASTEXITCODE -ne 0 -or -not $installationPath) { return $false }
+    $developerCommand = Join-Path ([string]$installationPath).Trim() 'Common7\Tools\VsDevCmd.bat'
+    if (-not (Test-Path -LiteralPath $developerCommand -PathType Leaf)) { return $false }
+
+    $environmentLines = & cmd.exe /d /s /c "`"$developerCommand`" -no_logo -arch=x64 -host_arch=x64 && set"
+    if ($LASTEXITCODE -ne 0) { return $false }
+    foreach ($line in $environmentLines) {
+        $separator = $line.IndexOf('=')
+        if ($separator -le 0) { continue }
+        $name = $line.Substring(0, $separator)
+        $value = $line.Substring($separator + 1)
+        [Environment]::SetEnvironmentVariable($name, $value, 'Process')
+    }
+    return $null -ne (Get-Command link.exe -ErrorAction SilentlyContinue)
+}
+
+function Ensure-VisualStudioBuildTools {
+    if (Import-VisualStudioBuildEnvironment) {
+        Write-Step 'Používám existující Microsoft C++ Build Tools.'
+        return
+    }
+    $winget = Get-WingetCommand
+    if (-not $winget) {
+        throw 'Chybí Microsoft C++ Build Tools a winget není dostupný.'
+    }
+    Write-Step 'Instaluji bezplatné Microsoft Visual Studio Build Tools pro nativní modul OpenJarvis.'
+    Invoke-NativeChecked -FilePath $winget.Source -Arguments @(
+        'install', '--id', 'Microsoft.VisualStudio.2022.BuildTools', '--exact', '--silent',
+        '--accept-source-agreements', '--accept-package-agreements', '--disable-interactivity',
+        '--override', '--wait --quiet --norestart --nocache --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended'
+    ) -FailureMessage 'Instalace Microsoft C++ Build Tools selhala'
+    if (-not (Import-VisualStudioBuildEnvironment)) {
+        throw 'Microsoft C++ Build Tools jsou nainstalované, ale link.exe se nepodařilo načíst.'
+    }
+}
+
+function Find-UvCommand {
+    $command = Get-Command uv.exe -ErrorAction SilentlyContinue
+    if ($command -and (Test-Path -LiteralPath $command.Source -PathType Leaf)) { return $command.Source }
+    $localUv = Join-Path $env:USERPROFILE '.local\bin\uv.exe'
+    if (Test-Path -LiteralPath $localUv -PathType Leaf) { return $localUv }
+    $wingetPackages = Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Packages'
+    $wingetUv = Get-ChildItem -LiteralPath $wingetPackages -Filter 'uv.exe' -File -Recurse -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -like '*astral-sh.uv*' } |
+        Select-Object -First 1 -ExpandProperty FullName
+    if ($wingetUv) { return $wingetUv }
+    return $null
+}
+
+function Ensure-Uv {
+    $uvPath = Find-UvCommand
+    if (-not $uvPath) {
+        $winget = Get-WingetCommand
+        if (-not $winget) { throw 'Chybí správce Python prostředí uv a winget není dostupný.' }
+        Write-Step 'Instaluji bezplatný správce Python prostředí uv.'
+        Invoke-NativeChecked -FilePath $winget.Source -Arguments @(
+            'install', '--id', 'astral-sh.uv', '--exact', '--version', '0.12.5', '--scope', 'user', '--silent',
+            '--accept-source-agreements', '--accept-package-agreements', '--disable-interactivity'
+        ) -FailureMessage 'Instalace uv selhala'
+        Refresh-ProcessPath
+        $uvPath = Find-UvCommand
+    }
+    if (-not $uvPath) { throw 'Program uv se po instalaci nepodařilo najít.' }
+    $env:PATH = "$(Split-Path -Parent $uvPath);$env:PATH"
+    return $uvPath
+}
+
+function Grant-InstallDirectoryAccess([string]$Directory) {
+    try {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+        $acl = Get-Acl -LiteralPath $Directory
+        $inheritance = [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+        $propagation = [Security.AccessControl.PropagationFlags]::None
+        $rule = [Security.AccessControl.FileSystemAccessRule]::new(
+            $identity,
+            [Security.AccessControl.FileSystemRights]::Modify,
+            $inheritance,
+            $propagation,
+            [Security.AccessControl.AccessControlType]::Allow
+        )
+        $acl.SetAccessRule($rule)
+        Set-Acl -LiteralPath $Directory -AclObject $acl
+    } catch {
+        throw "Cílové složce nelze nastavit oprávnění pro uživatele: $($_.Exception.Message)"
+    }
 }
 
 if (-not $InstallPath) {
@@ -101,9 +310,15 @@ if ($drive.AvailableFreeSpace -lt 24GB) {
 
 if ($installRoot -ne $sourceRoot) {
     $resuming = Test-Path -LiteralPath $installMarker
+    $sourceIsBundledInsideTarget = $sourceRoot.StartsWith(
+        $installRoot.TrimEnd('\') + '\',
+        [System.StringComparison]::OrdinalIgnoreCase
+    )
     if (Test-Path -LiteralPath $installRoot) {
         $existing = Get-ChildItem -LiteralPath $installRoot -Force | Where-Object Name -ne '.raven-installing' | Select-Object -First 1
-        if ($existing -and -not $resuming) { throw "Cílová složka není prázdná: $installRoot" }
+        if ($existing -and -not $resuming -and -not $sourceIsBundledInsideTarget) {
+            throw "Cílová složka není prázdná: $installRoot"
+        }
     }
     New-Item -ItemType Directory -Path $installRoot -Force | Out-Null
     Set-Content -LiteralPath $installMarker -Value 'Raven 1.0 installation in progress' -Encoding utf8
@@ -115,6 +330,7 @@ if ($installRoot -ne $sourceRoot) {
 
 $runtime = Join-Path $installRoot 'runtime'
 New-Item -ItemType Directory -Path $runtime -Force | Out-Null
+Grant-InstallDirectoryAccess -Directory $installRoot
 $env:OPENJARVIS_HOME = $installRoot
 $env:OPENJARVIS_SKIP_SERVICE = '1'
 $env:OLLAMA_MODELS = Join-Path $runtime 'ollama-models'
@@ -127,30 +343,103 @@ New-Item -ItemType Directory -Path $env:TEMP, $env:OLLAMA_MODELS, $env:UV_CACHE_
 Write-Step 'Kontroluji Git.'
 $git = Get-Command git -ErrorAction SilentlyContinue
 if (-not $git) {
-    $winget = Get-Command winget -ErrorAction SilentlyContinue
+    $winget = Get-WingetCommand
     if (-not $winget) { throw 'Chybí Git i winget. Nainstalujte Git pro Windows a spusťte instalátor znovu.' }
     Write-Step 'Instaluji Git pro Windows.'
-    & $winget.Source install --id Git.Git --silent --accept-source-agreements --accept-package-agreements
-    if ($LASTEXITCODE -ne 0) { throw 'Instalace Gitu selhala.' }
+    Invoke-NativeChecked -FilePath $winget.Source -Arguments @(
+        'install', '--id', 'Git.Git', '--silent', '--accept-source-agreements', '--accept-package-agreements', '--disable-interactivity'
+    ) -FailureMessage 'Instalace Gitu selhala'
     Refresh-ProcessPath
     $git = Assert-Command 'git'
 }
 
-if (-not (Test-Path -LiteralPath (Join-Path $installRoot 'src\.venv\Scripts\python.exe'))) {
-    Write-Step 'Spouštím oficiální instalaci OpenJarvisu do zvolené složky.'
-    $upstreamInstaller = Join-Path $runtime 'openjarvis-install.ps1'
-    Invoke-WebRequest -Uri 'https://open-jarvis.github.io/OpenJarvis/install.ps1' -OutFile $upstreamInstaller -UseBasicParsing
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $upstreamInstaller -SkipService
-    if ($LASTEXITCODE -ne 0) { throw "Instalace OpenJarvisu selhala s kódem $LASTEXITCODE." }
+Write-Step 'Kontroluji kompatibilní Python pro OpenJarvis.'
+$compatiblePython = Ensure-CompatiblePython
+Write-Step 'Kontroluji Microsoft C++ Build Tools pro OpenJarvis.'
+Ensure-VisualStudioBuildTools
+
+$openJarvisCommit = 'fd4490ca747e5b0d837b575c6b52fd024e5c24ac'
+$openJarvisArchiveHash = '29F2FF5B7427A3E6FA3947AC824D737D2289FE3C7232EC90D2DF3A8B62931398'
+$openJarvisSource = Join-Path $installRoot 'src'
+$openJarvisVersionFile = Join-Path $openJarvisSource '.raven-source-version'
+$sourceVersion = if (Test-Path -LiteralPath $openJarvisVersionFile -PathType Leaf) {
+    (Get-Content -LiteralPath $openJarvisVersionFile -Raw).Trim()
+} else { '' }
+if ($sourceVersion -ne $openJarvisCommit -or -not (Test-Path -LiteralPath (Join-Path $openJarvisSource 'pyproject.toml') -PathType Leaf)) {
+    Write-Step 'Stahuji ověřený zdroj OpenJarvisu pro Raven 1.0.'
+    $openJarvisArchive = Join-Path $runtime "OpenJarvis-$openJarvisCommit.zip"
+    $openJarvisStaging = Join-Path $runtime "OpenJarvis-$openJarvisCommit-staging"
+    $previousProgress = $ProgressPreference
+    try {
+        $ProgressPreference = 'SilentlyContinue'
+        Invoke-WebRequest -Uri "https://github.com/open-jarvis/OpenJarvis/archive/$openJarvisCommit.zip" -OutFile $openJarvisArchive -UseBasicParsing
+    } finally {
+        $ProgressPreference = $previousProgress
+    }
+    $downloadedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $openJarvisArchive).Hash
+    if ($downloadedHash -ne $openJarvisArchiveHash) {
+        throw "Kontrolní součet zdroje OpenJarvis nesouhlasí. Očekáváno $openJarvisArchiveHash, získáno $downloadedHash."
+    }
+    if (Test-Path -LiteralPath $openJarvisStaging) { Remove-Item -LiteralPath $openJarvisStaging -Recurse -Force }
+    New-Item -ItemType Directory -Path $openJarvisStaging -Force | Out-Null
+    Expand-Archive -LiteralPath $openJarvisArchive -DestinationPath $openJarvisStaging -Force
+    $extractedSource = Get-ChildItem -LiteralPath $openJarvisStaging -Directory | Select-Object -First 1
+    if (-not $extractedSource -or -not (Test-Path -LiteralPath (Join-Path $extractedSource.FullName 'pyproject.toml') -PathType Leaf)) {
+        throw 'Archiv OpenJarvis neobsahuje očekávaný zdrojový projekt.'
+    }
+    if (Test-Path -LiteralPath $openJarvisSource) { Remove-Item -LiteralPath $openJarvisSource -Recurse -Force }
+    Move-Item -LiteralPath $extractedSource.FullName -Destination $openJarvisSource
+    Set-Content -LiteralPath $openJarvisVersionFile -Value $openJarvisCommit -Encoding ascii
+    Remove-Item -LiteralPath $openJarvisArchive -Force
+    Remove-Item -LiteralPath $openJarvisStaging -Recurse -Force
 } else {
-    Write-Step 'Používám existující lokální prostředí OpenJarvisu.'
+    Write-Step 'Používám ověřený zdroj OpenJarvisu pro Raven 1.0.'
+}
+$uv = Ensure-Uv
+$venvPython = Join-Path $openJarvisSource '.venv\Scripts\python.exe'
+$jarvisCommand = Join-Path $openJarvisSource '.venv\Scripts\jarvis.exe'
+$openJarvisSyncMarker = Join-Path $openJarvisSource '.raven-uv-sync-complete'
+$openJarvisEnvironmentReady =
+    (Test-Path -LiteralPath $openJarvisSyncMarker -PathType Leaf) -and
+    (Test-Path -LiteralPath $venvPython -PathType Leaf) -and
+    (Test-Path -LiteralPath $jarvisCommand -PathType Leaf)
+if ($openJarvisEnvironmentReady) {
+    Write-Step 'Používám již připravené lokální Python prostředí OpenJarvisu.'
+} else {
+    Write-Step 'Připravuji lokální Python prostředí OpenJarvisu.'
+    Invoke-NativeChecked -FilePath $uv -Arguments @(
+        'sync', '--project', $openJarvisSource, '--python', $compatiblePython,
+        '--extra', 'desktop', '--group', 'desktop-native'
+    ) -FailureMessage 'Příprava prostředí OpenJarvisu selhala'
+    if (-not (Test-Path -LiteralPath $venvPython -PathType Leaf)) {
+        throw 'OpenJarvis nevytvořil očekávané Python prostředí.'
+    }
+    if (-not (Test-Path -LiteralPath $jarvisCommand -PathType Leaf)) {
+        throw 'OpenJarvis nevytvořil očekávaný příkaz jarvis.exe.'
+    }
+    Set-Content -LiteralPath $openJarvisSyncMarker -Value $openJarvisCommit -Encoding ascii
 }
 
-$python = Join-Path $installRoot 'src\.venv\Scripts\python.exe'
+$python = $venvPython
 if (-not (Test-Path -LiteralPath $python)) { throw 'OpenJarvis nevytvořil očekávané Python prostředí.' }
+if (-not (Test-Path -LiteralPath $jarvisCommand -PathType Leaf)) { throw 'OpenJarvis nevytvořil očekávaný příkaz jarvis.exe.' }
+$pipModule = Join-Path $installRoot 'src\.venv\Lib\site-packages\pip\__init__.py'
+if (-not (Test-Path -LiteralPath $pipModule -PathType Leaf)) {
+    Write-Step 'Doplňuji pip do lokálního Python prostředí.'
+    Invoke-NativeChecked -FilePath $python -Arguments @('-m', 'ensurepip', '--upgrade') -FailureMessage 'Do prostředí OpenJarvisu se nepodařilo nainstalovat pip'
+}
 
 Write-Step 'Odstraňuji nepoužívané hlasové balíčky a modely.'
-& $python -m pip uninstall -y openwakeword piper-tts sounddevice soundfile 2>$null
+$previousErrorActionPreference = $ErrorActionPreference
+try {
+    $ErrorActionPreference = 'Continue'
+    $pipUninstallOutput = & $python -m pip uninstall -y openwakeword piper-tts sounddevice soundfile 2>&1
+    $pipUninstallExitCode = $LASTEXITCODE
+} finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+}
+$pipUninstallOutput | ForEach-Object { Write-Host $_ }
+if ($pipUninstallExitCode -ne 0) { throw 'Odstranění nepoužívaných hlasových balíčků selhalo.' }
 foreach ($voiceCache in @(
     (Join-Path $runtime 'piper'),
     (Join-Path $runtime 'voice'),
@@ -164,14 +453,14 @@ foreach ($voiceCache in @(
 }
 
 Write-Step 'Instaluji bezplatnou lokální telemetrii procesů.'
-& $python -m pip install --disable-pip-version-check psutil
-if ($LASTEXITCODE -ne 0) { throw 'Nelze nainstalovat telemetrii procesů psutil.' }
+Invoke-NativeChecked -FilePath $python -Arguments @('-m', 'pip', 'install', '--disable-pip-version-check', 'psutil') -FailureMessage 'Nelze nainstalovat telemetrii procesů psutil'
 
 Write-Step 'Instaluji bezplatné agentní jádro, webového agenta a lokální crawler.'
-& $python -m pip install --disable-pip-version-check 'pydantic-ai-slim==2.32.0' 'browser-use==0.13.8' 'crawl4ai==0.9.2' 'mcp==1.26.0' 'starlette==0.52.1' 'pytest==9.1.1'
-if ($LASTEXITCODE -ne 0) { throw 'Instalace agentních komponent selhala.' }
-& $python -m pip check
-if ($LASTEXITCODE -ne 0) { throw 'Python závislosti agentního jádra nejsou kompatibilní.' }
+Invoke-NativeChecked -FilePath $python -Arguments @(
+    '-m', 'pip', 'install', '--disable-pip-version-check', 'pydantic-ai-slim==2.32.0',
+    'browser-use==0.13.8', 'crawl4ai==0.9.2', 'mcp==1.26.0', 'starlette==0.52.1', 'pytest==9.1.1'
+) -FailureMessage 'Instalace agentních komponent selhala'
+Invoke-NativeChecked -FilePath $python -Arguments @('-m', 'pip', 'check') -FailureMessage 'Python závislosti agentního jádra nejsou kompatibilní'
 
 Write-Step 'Vytvářím lokální konfiguraci Raven 1.0.'
 foreach ($template in Get-ChildItem -LiteralPath (Join-Path $installRoot 'defaults') -Filter '*.json') {
@@ -194,42 +483,60 @@ $node = Ensure-Node
 $npm = Assert-Command 'npm.cmd'
 $desktopPath = Join-Path $installRoot 'desktop'
 $electronProject = Join-Path $installRoot 'desktop-electron'
+$env:npm_config_cache = Join-Path $runtime 'npm-cache'
+New-Item -ItemType Directory -Path $env:npm_config_cache -Force | Out-Null
 if (-not (Test-Path -LiteralPath (Join-Path $electronProject 'package.json'))) {
     throw 'Zdroj desktopové vrstvy Raven chybí.'
 }
-& $npm install --prefix $electronProject --no-audit --no-fund
-if ($LASTEXITCODE -ne 0) { throw 'Instalace bezplatných desktopových závislostí selhala.' }
-& $npm run --prefix $electronProject pack:portable
-if ($LASTEXITCODE -ne 0) { throw 'Vytvoření desktopového EXE selhalo.' }
+Push-Location -LiteralPath $electronProject
+try {
+    Invoke-NativeChecked -FilePath $npm -Arguments @('ci', '--no-audit', '--no-fund') -FailureMessage 'Instalace bezplatných desktopových závislostí selhala'
+    Invoke-NativeChecked -FilePath $npm -Arguments @('run', 'pack:portable') -FailureMessage 'Vytvoření desktopového EXE selhalo'
+} finally {
+    Pop-Location
+}
 $builtDesktop = Join-Path $installRoot 'desktop-dist\Raven-Desktop.exe'
 if (-not (Test-Path -LiteralPath $builtDesktop)) { throw 'Sestavený Raven-Desktop.exe nebyl nalezen.' }
 Copy-Item -LiteralPath $builtDesktop -Destination (Join-Path $desktopPath 'Raven-Desktop.exe') -Force
 
+$ollamaPath = Join-Path $runtime 'ollama\ollama.exe'
+if (-not (Test-Path -LiteralPath $ollamaPath)) {
+    $ollama = Get-Command ollama.exe -ErrorAction SilentlyContinue
+    if ($ollama) { $ollamaPath = $ollama.Source }
+}
+if (-not (Test-Path -LiteralPath $ollamaPath)) {
+    $winget = Get-WingetCommand
+    if (-not $winget) { throw 'Chybí Ollama a winget není dostupný.' }
+    Write-Step 'Instaluji bezplatnou Ollamu.'
+    Invoke-NativeChecked -FilePath $winget.Source -Arguments @(
+        'install', '--id', 'Ollama.Ollama', '--silent', '--accept-source-agreements',
+        '--accept-package-agreements', '--disable-interactivity'
+    ) -FailureMessage 'Instalace Ollamy selhala'
+    Refresh-ProcessPath
+    $ollama = Get-Command ollama.exe -ErrorAction SilentlyContinue
+    if ($ollama) { $ollamaPath = $ollama.Source }
+}
+if (-not (Test-Path -LiteralPath $ollamaPath -PathType Leaf)) {
+    throw 'Ollama nebyla po instalaci nalezena.'
+}
+$modelStatus = @{}
 if (-not $SkipModel) {
-    $ollamaPath = Join-Path $runtime 'ollama\ollama.exe'
-    if (-not (Test-Path -LiteralPath $ollamaPath)) {
-        $ollama = Get-Command ollama.exe -ErrorAction SilentlyContinue
-        if ($ollama) { $ollamaPath = $ollama.Source }
-    }
-    if (-not (Test-Path -LiteralPath $ollamaPath)) {
-        $winget = Get-Command winget -ErrorAction SilentlyContinue
-        if ($winget) {
-            Write-Step 'Instaluji bezplatnou Ollamu.'
-            & $winget.Source install --id Ollama.Ollama --silent --accept-source-agreements --accept-package-agreements --disable-interactivity
-            Refresh-ProcessPath
-            $ollama = Get-Command ollama.exe -ErrorAction SilentlyContinue
-            if ($ollama) { $ollamaPath = $ollama.Source }
-        }
-    }
-    if (Test-Path -LiteralPath $ollamaPath) {
         foreach ($model in @('qwen3.5:4b', 'qwen3.5:9b', 'qwen2.5-coder:7b')) {
             Write-Step "Stahuji lokální bezplatný model $model."
-            & $ollamaPath pull $model
-            if ($LASTEXITCODE -ne 0) { Write-Warning "Model $model se nestáhl. Později spusťte: ollama pull $model" }
+            $previousPreference = $ErrorActionPreference
+            try {
+                $ErrorActionPreference = 'Continue'
+                & $ollamaPath pull $model 2>&1 | ForEach-Object { Write-Host $_ }
+                $modelExitCode = $LASTEXITCODE
+            } finally {
+                $ErrorActionPreference = $previousPreference
+            }
+            $modelStatus[$model] = $modelExitCode -eq 0
+            if ($modelExitCode -ne 0) { Write-Warning "Model $model se nestáhl. Později spusťte: ollama pull $model" }
         }
-    } else {
-        Write-Warning 'Ollama nebyla po instalaci nalezena. Online bezplatný režim zůstává dostupný.'
-    }
+        if (-not ($modelStatus.Values -contains $true)) {
+            throw 'Nepodařilo se připravit žádný lokální model. Instalaci lze zopakovat po kontrole připojení a Ollamy.'
+        }
 }
 
 Write-Step 'Připravuji lokálního agenta OpenClaw bez Gateway a bez oprávnění k příkazům.'
@@ -238,8 +545,7 @@ $npm = Assert-Command 'npm.cmd'
 $openClawRoot = Join-Path $runtime 'openclaw'
 $env:npm_config_cache = Join-Path $openClawRoot 'npm-cache'
 New-Item -ItemType Directory -Path $openClawRoot, $env:npm_config_cache -Force | Out-Null
-& $npm install --prefix $openClawRoot --omit=dev 'openclaw@2026.7.1-2'
-if ($LASTEXITCODE -ne 0) { throw 'Instalace OpenClaw selhala.' }
+Invoke-NativeChecked -FilePath $npm -Arguments @('install', '--prefix', $openClawRoot, '--omit=dev', 'openclaw@2026.7.1-2') -FailureMessage 'Instalace OpenClaw selhala'
 $openClawConfig = @{
     models = @{ providers = @{ ollama = @{
         baseUrl = 'http://127.0.0.1:11434'; apiKey = 'ollama-local'; api = 'ollama'; timeoutSeconds = 300
@@ -260,16 +566,19 @@ $env:OPENCLAW_CONFIG_PATH = $openClawConfigPath
 $env:OPENCLAW_WORKSPACE_DIR = Join-Path $runtime 'agents\openclaw'
 New-Item -ItemType Directory -Path $env:OPENCLAW_STATE_DIR, $env:OPENCLAW_WORKSPACE_DIR -Force | Out-Null
 $openClawCommand = Join-Path $openClawRoot 'node_modules\.bin\openclaw.cmd'
-& $openClawCommand exec-policy preset deny-all
-if ($LASTEXITCODE -ne 0) { throw 'Nelze nastavit bezpečnostní politiku OpenClaw.' }
+if (-not (Test-Path -LiteralPath $openClawCommand -PathType Leaf)) {
+    throw 'OpenClaw se nainstaloval bez očekávaného příkazu openclaw.cmd.'
+}
+Invoke-NativeChecked -FilePath $openClawCommand -Arguments @('exec-policy', 'preset', 'deny-all') -FailureMessage 'Nelze nastavit bezpečnostní politiku OpenClaw'
 $agentsPath = Join-Path $runtime 'raven-agents.json'
 $agents = Get-Content -LiteralPath $agentsPath -Raw | ConvertFrom-Json
 $openClawAgent = $agents.agents | Where-Object { $_.id -eq 'openclaw' } | Select-Object -First 1
 if ($openClawAgent) {
     $openClawAgent.model = 'qwen2.5-coder:7b'
-    $openClawAgent.status = if ($SkipModel) { 'planned' } else { 'ready' }
+    $openClawReady = -not $SkipModel -and $modelStatus['qwen2.5-coder:7b'] -eq $true
+    $openClawAgent.status = if ($openClawReady) { 'ready' } else { 'planned' }
     $openClawAgent.rules = @('Používá jen lokální Ollama a nemá spuštěnou Gateway.', 'Pracuje pouze v izolovaném pracovním adresáři.', 'Systémové změny, síť a externí účty zůstávají zablokované.')
-    $openClawAgent.permissions = if ($SkipModel) { @('Čeká na stažení qwen2.5-coder:7b') } else { @('Lokální textová inference', 'Bez příkazů, sítě a externích účtů') }
+    $openClawAgent.permissions = if ($openClawReady) { @('Lokální textová inference', 'Bez příkazů, sítě a externích účtů') } else { @('Čeká na stažení qwen2.5-coder:7b') }
     $agents | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $agentsPath -Encoding utf8
 }
 $openClawModulePath = Join-Path $runtime 'openclaw-module.json'
@@ -282,7 +591,7 @@ $openClawModule | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $openClawM
 Write-Step 'Připravuji volitelnou lokální telemetrii.'
 try {
     $lhmZip = Join-Path $runtime 'LibreHardwareMonitor.zip'
-    Invoke-WebRequest -Uri 'https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases/latest/download/LibreHardwareMonitor-net472.zip' -OutFile $lhmZip -UseBasicParsing
+    Invoke-WebRequest -Uri 'https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases/latest/download/LibreHardwareMonitor.zip' -OutFile $lhmZip -UseBasicParsing
     Expand-Archive -LiteralPath $lhmZip -DestinationPath (Join-Path $runtime 'librehardwaremonitor') -Force
     Remove-Item -LiteralPath $lhmZip -Force
 } catch {
@@ -290,11 +599,25 @@ try {
 }
 
 try {
-    $winget = Get-Command winget -ErrorAction Stop
+    $winget = Get-WingetCommand
+    if (-not $winget) { throw 'winget není dostupný.' }
     $presentMonDirectory = Join-Path $runtime 'presentmon'
-    Write-Step 'Instaluji bezplatný PresentMon pro FPS a frametime.'
-    & $winget.Source install --id Intel.PresentMon.Console --exact --location $presentMonDirectory --silent --accept-source-agreements --accept-package-agreements --disable-interactivity
-    if ($LASTEXITCODE -ne 0) { throw "PresentMon skončil s kódem $LASTEXITCODE." }
+    New-Item -ItemType Directory -Path $presentMonDirectory -Force | Out-Null
+    $presentMonTarget = Join-Path $presentMonDirectory 'PresentMon.exe'
+    $presentMonExisting = Get-Command PresentMon.exe -ErrorAction SilentlyContinue
+    if ($presentMonExisting -and (Test-Path -LiteralPath $presentMonExisting.Source -PathType Leaf)) {
+        Copy-Item -LiteralPath $presentMonExisting.Source -Destination $presentMonTarget -Force
+    } else {
+        Write-Step 'Instaluji bezplatný PresentMon pro FPS a frametime.'
+        Invoke-NativeChecked -FilePath $winget.Source -Arguments @(
+            'install', '--id', 'Intel.PresentMon.Console', '--exact', '--location', $presentMonDirectory,
+            '--silent', '--accept-source-agreements', '--accept-package-agreements', '--disable-interactivity'
+        ) -FailureMessage 'Instalace PresentMon selhala'
+    }
+    if (-not (Test-Path -LiteralPath $presentMonTarget -PathType Leaf)) {
+        $presentMonInstalled = Get-ChildItem -LiteralPath $presentMonDirectory -Filter 'PresentMon.exe' -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $presentMonInstalled) { throw 'PresentMon.exe nebyl po instalaci nalezen.' }
+    }
 } catch {
     Write-Warning 'PresentMon se nepodařilo nainstalovat; ostatní telemetrie zůstává funkční.'
 }
@@ -316,6 +639,81 @@ try {
     Write-Warning 'Microsoft Handle se nepodařilo ověřit; registry handly zůstanou nedostupné.'
 }
 
+Write-Step 'Provádím závěrečnou kontrolu nainstalované aplikace.'
+$requiredFiles = @(
+    (Join-Path $installRoot 'raven_control.py'),
+    (Join-Path $installRoot 'raven_intelligence.py'),
+    (Join-Path $installRoot 'agent_runtime.py'),
+    (Join-Path $installRoot 'spustit-raven.ps1'),
+    (Join-Path $installRoot 'hud\index.html'),
+    (Join-Path $installRoot 'desktop-electron\main.js'),
+    (Join-Path $installRoot 'desktop-electron\preload.js'),
+    (Join-Path $desktopPath 'Raven-Desktop.exe'),
+    $python,
+    $jarvisCommand,
+    $settingsPath,
+    $agentsPath
+)
+foreach ($requiredFile in $requiredFiles) {
+    if (-not (Test-Path -LiteralPath $requiredFile -PathType Leaf)) {
+        throw "Závěrečná kontrola nenašla povinný soubor: $requiredFile"
+    }
+}
+if ((Get-Item -LiteralPath (Join-Path $desktopPath 'Raven-Desktop.exe')).Length -lt 1MB) {
+    throw 'Raven-Desktop.exe je neúplný nebo poškozený.'
+}
+$pythonValidation = @'
+import importlib
+import json
+import py_compile
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1]).resolve()
+for name in (
+    "agent_runtime.py",
+    "hardware_monitor.py",
+    "network_monitor.py",
+    "raven_control.py",
+    "raven_intelligence.py",
+    "telemetry_extensions.py",
+):
+    py_compile.compile(str(root / name), doraise=True)
+for module in ("browser_use", "crawl4ai", "mcp", "psutil", "pydantic_ai", "starlette"):
+    importlib.import_module(module)
+for name in ("raven-settings.json", "raven-agents.json", "model-router.json"):
+    with (root / "runtime" / name).open("r", encoding="utf-8-sig") as handle:
+        json.load(handle)
+'@
+$pythonValidationPath = Join-Path $env:TEMP 'raven-install-validation.py'
+Set-Content -LiteralPath $pythonValidationPath -Value $pythonValidation -Encoding utf8
+try {
+    Invoke-NativeChecked -FilePath $python -Arguments @($pythonValidationPath, $installRoot) -FailureMessage 'Python a konfigurace neprošly závěrečnou kontrolou'
+} finally {
+    Remove-Item -LiteralPath $pythonValidationPath -Force -ErrorAction SilentlyContinue
+}
+Invoke-NativeChecked -FilePath $node.Source -Arguments @('--check', (Join-Path $electronProject 'main.js')) -FailureMessage 'Electron main.js neprošel kontrolou syntaxe'
+Invoke-NativeChecked -FilePath $node.Source -Arguments @('--check', (Join-Path $electronProject 'preload.js')) -FailureMessage 'Electron preload.js neprošel kontrolou syntaxe'
+$launcherTokens = $null
+$launcherErrors = $null
+[System.Management.Automation.Language.Parser]::ParseFile(
+    (Join-Path $installRoot 'spustit-raven.ps1'),
+    [ref]$launcherTokens,
+    [ref]$launcherErrors
+) | Out-Null
+if ($launcherErrors.Count -gt 0) {
+    throw "Spouštěcí skript obsahuje chybu: $($launcherErrors[0].Message)"
+}
+$verificationReport = [ordered]@{
+    version = '1.0'
+    verified_at = [DateTime]::UtcNow.ToString('o')
+    install_root = $installRoot
+    python = $python
+    desktop_exe = (Join-Path $desktopPath 'Raven-Desktop.exe')
+    status = 'passed'
+}
+$verificationReport | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $runtime 'install-verification.json') -Encoding utf8
+
 $shortcutPath = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Raven 1.0.lnk'
 $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut($shortcutPath)
@@ -330,4 +728,14 @@ $installConfigDirectory = Join-Path $env:LOCALAPPDATA 'Raven'
 New-Item -ItemType Directory -Path $installConfigDirectory -Force | Out-Null
 Set-Content -LiteralPath (Join-Path $installConfigDirectory 'install-path.txt') -Value $installRoot -Encoding utf8
 Remove-Item -LiteralPath $installMarker -Force -ErrorAction SilentlyContinue
-Write-Step 'Instalace dokončena. Spusťte zástupce Raven 1.0 na ploše.'
+Write-Step "Instalace dokončena v $installRoot"
+try { Stop-Transcript | Out-Null } catch {}
+
+if (-not $NoLaunch) {
+    Write-Step 'Spouštím Raven 1.0.'
+    Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+        -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', "`"$installRoot\spustit-raven.ps1`"" `
+        -WorkingDirectory $installRoot
+}
+
+exit 0

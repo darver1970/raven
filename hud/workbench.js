@@ -201,7 +201,7 @@ renderWorkspace = async function() {
   desktop?.browser.setVisible(false);
   if (state.workspace === "browser") { if (desktop) renderBrowser(c); else oldRenderWorkspace(); return; }
   if (state.workspace === "files") { await renderFiles(); return; }
-  if (state.workspace === "artifacts") { try { const data = await desktop.listFiles("C:\\Raven\\runtime\\artifacts"); c.innerHTML = data.entries.map(item => `<div class="workspace-entry">${escapeHtml(item.name)}<small>${item.size || 0} B</small></div>`).join("") || '<p class="muted">Zatím nejsou žádné artefakty.</p>'; } catch { c.innerHTML = '<p class="muted">Zatím nejsou žádné artefakty.</p>'; } return; }
+  if (state.workspace === "artifacts") { try { const rootPath = await desktop.rootPath(); const data = await desktop.listFiles({ path: `${rootPath}\\runtime\\artifacts` }); c.innerHTML = data.entries.map(item => `<div class="workspace-entry">${escapeHtml(item.name)}<small>${item.size || 0} B</small></div>`).join("") || '<p class="muted">Zatím nejsou žádné artefakty.</p>'; } catch { c.innerHTML = '<p class="muted">Zatím nejsou žádné artefakty.</p>'; } return; }
   await oldRenderWorkspace();
 };
 

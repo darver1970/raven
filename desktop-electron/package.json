@@ -39,6 +39,11 @@
       }
     ],
     "win": { "target": ["nsis", "portable"], "icon": "../desktop/raven.ico", "executableName": "Raven" },
-    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true, "createDesktopShortcut": true, "shortcutName": "Raven 1.0" }
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "Raven 1.0"
+    }
   }
 }
