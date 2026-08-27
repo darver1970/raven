@@ -70,9 +70,9 @@ function Assert-Command([string]$Name) {
 
 function Copy-RavenFiles([string]$From, [string]$To) {
     $fileNames = @(
-        '.gitignore', 'LICENSE', 'NOTICE', 'README.md', 'RELEASE_NOTES.md', 'VERSION', 'install.ps1', 'spustit-raven.ps1',
+        '.gitignore', 'AGENTS.md', 'LICENSE', 'NOTICE', 'README.md', 'RELEASE_NOTES.md', 'VERSION', 'install.ps1', 'spustit-raven.ps1',
         'hardware_monitor.py', 'telemetry_extensions.py', 'raven_control.py', 'network_monitor.py',
-        'agent_runtime.py', 'raven_intelligence.py'
+        'agent_runtime.py', 'raven_brain.py', 'raven_intelligence.py'
     )
     foreach ($name in $fileNames) {
         Copy-Item -LiteralPath (Join-Path $From $name) -Destination (Join-Path $To $name) -Force
@@ -642,6 +642,7 @@ try {
 Write-Step 'Provádím závěrečnou kontrolu nainstalované aplikace.'
 $requiredFiles = @(
     (Join-Path $installRoot 'raven_control.py'),
+    (Join-Path $installRoot 'raven_brain.py'),
     (Join-Path $installRoot 'raven_intelligence.py'),
     (Join-Path $installRoot 'agent_runtime.py'),
     (Join-Path $installRoot 'spustit-raven.ps1'),
@@ -672,6 +673,7 @@ from pathlib import Path
 root = Path(sys.argv[1]).resolve()
 for name in (
     "agent_runtime.py",
+    "raven_brain.py",
     "hardware_monitor.py",
     "network_monitor.py",
     "raven_control.py",

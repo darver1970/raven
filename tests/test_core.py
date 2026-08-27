@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
+import threading
 
 import pytest
 from pydantic import ValidationError
@@ -22,6 +25,7 @@ def test_version_is_one_zero() -> None:
 def test_system_prompt_forbids_invented_provider_state() -> None:
     assert "nevkládej vlastní provozní stav" in RAVEN_SYSTEM_PROMPT
     assert "údaje zobrazuje rozhraní Ravenu samo" in RAVEN_SYSTEM_PROMPT
+    assert "ověřený výsledek příslušného nástroje" in RAVEN_SYSTEM_PROMPT
 
 
 def test_free_provider_catalog_has_required_order_and_no_grok() -> None:
@@ -34,6 +38,100 @@ def test_free_provider_catalog_has_required_order_and_no_grok() -> None:
         assert order.index("gemini_free") < order.index("openrouter_free")
     assert "grok" not in " ".join(ids).lower()
     assert "xai" not in " ".join(ids).lower()
+
+
+def test_local_fallback_remains_available_when_its_previous_health_failed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(raven_control, "load_cloud_secrets", lambda: {})
+    monkeypatch.setattr(raven_control, "provider_circuit_open", lambda provider: provider == "local")
+    assert raven_control.automatic_provider_order() == ["local"]
+
+
+def test_automatic_router_falls_back_after_free_quota(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(raven_control, "automatic_provider_order", lambda intent: ["gemini_free", "openrouter_free", "local"])
+    monkeypatch.setattr(raven_control, "record_provider_health", lambda *_: None)
+
+    def request(provider: str, *_: object, **__: object) -> str:
+        calls.append(provider)
+        if provider == "gemini_free":
+            raise raven_control.ProviderQuotaError("limit vyčerpán")
+        return "ověřená odpověď"
+
+    monkeypatch.setattr(raven_control, "provider_request", request)
+    selected, answer, fallbacks = raven_control.automatic_provider_request(
+        [{"role": "user", "content": "test"}],
+        intent="chat",
+    )
+    assert selected == "openrouter_free"
+    assert answer == "ověřená odpověď"
+    assert calls == ["gemini_free", "openrouter_free"]
+    assert fallbacks == [{"provider": "gemini_free", "reason": "limit vyčerpán"}]
+
+
+def test_automatic_router_retries_one_transient_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    attempts = 0
+    monkeypatch.setattr(raven_control, "automatic_provider_order", lambda intent: ["gemini_free", "local"])
+    monkeypatch.setattr(raven_control, "record_provider_health", lambda *_: None)
+    monkeypatch.setattr(raven_control.time, "sleep", lambda *_: None)
+
+    def request(*_: object, **__: object) -> str:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise raven_control.ProviderTransientError("dočasný výpadek")
+        return "odpověď po opakování"
+
+    monkeypatch.setattr(raven_control, "provider_request", request)
+    selected, answer, fallbacks = raven_control.automatic_provider_request(
+        [{"role": "user", "content": "test"}],
+        intent="chat",
+    )
+    assert selected == "gemini_free"
+    assert answer == "odpověď po opakování"
+    assert fallbacks == []
+    assert attempts == 2
+
+
+def test_recent_events_are_scoped_to_one_chat() -> None:
+    with raven_control.EVENT_LOCK:
+        original = list(raven_control.EVENTS)
+        raven_control.EVENTS.clear()
+        raven_control.EVENTS.extend([
+            {"id": "one", "chat_id": "chat-a", "task_id": "task-a", "step": "received"},
+            {"id": "two", "chat_id": "chat-b", "task_id": "task-b", "step": "received"},
+            {"id": "three", "chat_id": "chat-a", "task_id": "task-a", "step": "done"},
+        ])
+    try:
+        assert [item["id"] for item in raven_control.recent_events(chat_id="chat-a")] == ["one", "three"]
+        assert [item["id"] for item in raven_control.recent_events(task_id="task-b")] == ["two"]
+    finally:
+        with raven_control.EVENT_LOCK:
+            raven_control.EVENTS.clear()
+            raven_control.EVENTS.extend(original)
+
+
+def test_live_event_has_versioned_identity_and_ordering(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(raven_control, "sync_agent_event", lambda _: None)
+    with raven_control.EVENT_LOCK:
+        original = list(raven_control.EVENTS)
+    try:
+        first = raven_control.emit_event("test", "working", chat_id="event-contract")
+        second = raven_control.emit_event("test", "completed", chat_id="event-contract")
+        assert first["schema_version"] == 1
+        assert first["event_type"] == "brain.test"
+        assert first["provenance"] == "live"
+        assert first["session_id"] == second["session_id"]
+        assert int(second["sequence"]) == int(first["sequence"]) + 1
+    finally:
+        with raven_control.EVENT_LOCK:
+            raven_control.EVENTS.clear()
+            raven_control.EVENTS.extend(original)
+
+
+def test_confirmation_retry_reuses_brain_task_in_frontend() -> None:
+    source = (ROOT / "hud" / "hud.js").read_text(encoding="utf-8")
+    assert "brain_task_id:data.brain_task_id" in source
+    assert "confirmation_token:data.confirmation_token" in source
 
 
 @pytest.mark.parametrize("provider", ["grok", "xai", "paid", "unknown"])
@@ -50,6 +148,29 @@ def test_forbidden_model_is_rejected(model: str) -> None:
 
 def test_agent_runtime_never_allows_more_than_two_heavy_agents() -> None:
     assert AgentRuntime(limit=99).limit == 2
+
+
+def test_agent_runtime_is_safe_across_server_threads_and_event_loops() -> None:
+    runtime = AgentRuntime(limit=2)
+    observed_maximum = 0
+    observed_lock = threading.Lock()
+
+    async def operation(_: AgentTask) -> int:
+        nonlocal observed_maximum
+        with observed_lock:
+            observed_maximum = max(observed_maximum, int(runtime.status()["active"]))
+        await asyncio.sleep(0.03)
+        return 1
+
+    def execute(index: int) -> int:
+        task = AgentTask(prompt=f"úkol {index}", agent_id="tester", permission_mode="full")
+        return asyncio.run(runtime.run(task, operation))
+
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        results = list(executor.map(execute, range(6)))
+    assert results == [1] * 6
+    assert observed_maximum == 2
+    assert runtime.status()["completed"] == 6
 
 
 def test_hardware_status_contains_live_dashboard_data() -> None:

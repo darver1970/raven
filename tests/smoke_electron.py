@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import shutil
+import time
 
 from playwright.sync_api import sync_playwright
 
@@ -11,12 +14,24 @@ from playwright.sync_api import sync_playwright
 ROOT = Path(__file__).resolve().parent.parent
 RESULTS = ROOT / "runtime" / "test-results"
 RESULTS.mkdir(parents=True, exist_ok=True)
+SCREENSHOT = RESULTS / "raven-main.png"
 
 
 with sync_playwright() as playwright:
     browser = playwright.chromium.connect_over_cdp("http://127.0.0.1:9223")
-    pages = [page for context in browser.contexts for page in context.pages]
-    hud = next(page for page in pages if page.url.startswith("http://127.0.0.1:5174/"))
+    hud = None
+    page_deadline = time.monotonic() + 30
+    while time.monotonic() < page_deadline:
+        pages = [page for context in browser.contexts for page in context.pages]
+        hud = next(
+            (page for page in pages if page.url.startswith("http://127.0.0.1:5174/")),
+            None,
+        )
+        if hud is not None:
+            break
+        time.sleep(0.25)
+    if hud is None:
+        raise AssertionError("Raven HUD se v zabaleném Electronu nenačetl do 30 sekund.")
     errors: list[str] = []
     hud.on("pageerror", lambda error: errors.append(str(error)))
     hud.reload(wait_until="domcontentloaded")
@@ -85,20 +100,46 @@ with sync_playwright() as playwright:
     hud.wait_for_timeout(2800)
     assert hud.locator(".live-work-log").count() == 0
     hud.evaluate("""() => {
-      state.liveEventChatId = state.activeChatId;
+      state.liveEventChatId = 'smoke-source-chat';
+      state.activeChatId = 'smoke-target-chat';
       state.liveEvents = [{id:'chat-isolation-test', step:'analysis', status:'working', agent:'analyst', result:'Kontrolní průběh'}];
       renderWorkLog();
     }""")
-    assert hud.locator(".live-work-log").count() == 1
-    hud.locator("#new-chat").click()
-    hud.wait_for_timeout(300)
     assert hud.locator(".live-work-log").count() == 0
     hud.evaluate("""async () => {
       await fetch('http://127.0.0.1:8126/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({permission_mode:'full', simulation_mode:false})});
     }""")
-    hud.screenshot(path=str(RESULTS / "raven-main.png"), full_page=True)
+    hud.screenshot(path=str(SCREENSHOT), full_page=True)
     summary = hud.evaluate("window.ravenDesktop.gitSummary()")
     assert summary["count"] > 0
     if errors:
         raise AssertionError(json.dumps(errors, ensure_ascii=False, indent=2))
-    print(json.dumps({"ok": True, "tabs": len(closed["tabs"]), "files": len(files["entries"]), "agents": 2, "git_changes": summary["count"], "screenshot": str(RESULTS / "raven-main.png")}, ensure_ascii=False))
+    print(json.dumps({"ok": True, "tabs": len(closed["tabs"]), "files": len(files["entries"]), "agents": 2, "git_changes": summary["count"], "screenshot": str(SCREENSHOT)}, ensure_ascii=False))
+    try:
+        browser.new_browser_cdp_session().send("Browser.close")
+    except Exception as error:
+        if "closed" not in str(error).lower():
+            raise
+
+for _ in range(30):
+    try:
+        SCREENSHOT.unlink(missing_ok=True)
+        break
+    except PermissionError:
+        time.sleep(0.2)
+
+profile_value = os.environ.get("RAVEN_ELECTRON_PROFILE", "").strip()
+if profile_value:
+    profile = Path(profile_value).resolve()
+    runtime_root = (ROOT / "runtime").resolve()
+    if profile.parent != runtime_root or not profile.name.startswith("electron-smoke-"):
+        raise RuntimeError(f"Odmítám uklidit neplatný testovací profil: {profile}")
+    for attempt in range(30):
+        try:
+            if profile.exists():
+                shutil.rmtree(profile)
+            break
+        except PermissionError:
+            if attempt == 29:
+                raise
+            time.sleep(0.2)

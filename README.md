@@ -4,7 +4,7 @@ Raven 1.0 je lokální desktopový AI pracovní prostor pro 64bitové Windows 10
 
 ## Nejjednodušší instalace
 
-1. Na stránce **Releases** stáhněte pouze `Raven-1.0-Setup.exe` z nejnovějšího vydání 1.0.
+1. Na stránce [Releases](https://github.com/darver1970/raven/releases/tag/v1.0) stáhněte pouze `Raven-1.0-Setup.exe` z vydání 1.0.
 2. Spusťte instalátor. Při prvním spuštění se Raven zeptá na jedinou pracovní složku; výchozí je `C:\Raven`. Do zvolené složky uloží zdroje, modely, runtime i data a připraví pouze bezplatné závislosti.
 3. Dokončení první instalace může trvat déle kvůli stažení lokálního modelu. Potom spusťte zástupce **Raven 1.0** na ploše.
 
@@ -54,6 +54,8 @@ Na další zdroj se přepne při vyčerpání bezplatné kvóty nebo při nedost
 - Pracovní panel: skutečné webové karty Electron WebContentsView, trvalé přihlášení, procházení celého počítače (disky, zpět, vpřed a nahoru), soubory v Monaco editoru, výstupy, Git změny, logy, paměť a artefakty. Šířka se mění myší a ukládá.
 - Nabídky: funkční rozbalovací lišty Soubor, Upravit a Zobrazení se zkratkami pro chaty, složky, editaci, panely, prohlížeč, terminál, navigaci, zoom a celou obrazovku.
 - Živé kroky: Přijato, Analýza, Plán, Kontext, Provedení, Úpravy, Test, Kontrola a Hotovo/Chyba přes lokální SSE. Průběh je součástí rolovacího chatu, nepřenáší se mezi chaty a po dokončení automaticky zmizí.
+- Mozek úloh: před provedením klasifikuje záměr a složitost, sestaví plán, průběžně ukládá kontrolní body, eviduje výsledek každého kroku a po restartu bezpečně obnoví nedokončenou práci. Úlohu označí jako hotovou až po kontrole požadovaných důkazů.
+- Bezpečné potvrzení: citlivá akce v režimu Potvrzení používá jednorázové potvrzení svázané s konkrétním chatem, úlohou a přesným příkazem. Potvrzení po deseti minutách vyprší a nelze jej použít podruhé.
 - Plánování a pluginy: lokální seznam naplánovaných úkolů a katalog bezplatných modulů.
 - Oprávnění: Plný přístup, Potvrzení a Zakázáno; pravidla se vynucují v rozhraní i lokálním backendu.
 - Skutečné lokální nástroje: chat umí přes agenty Planner, Files, Tester a Reviewer vytvořit, přečíst a upravit textový soubor, vytvořit složku a obnovitelně odstranit soubor. Výsledek se po provedení zpětně ověřuje.
@@ -68,24 +70,25 @@ Raven neaktivuje žádné placené předplatné. Grok a xAI jsou trvale zakázan
 
 ## Architektura a inspirace
 
-Rozhraní a návrh pracovních postupů vycházejí z veřejně dostupných principů projektů Open WebUI, OpenCode, Vane, agenticSeek a Meetily. Jejich zdrojové kódy nejsou bez rozmyslu sloučeny do Ravenu; komponenty s nekompatibilní copyleft licencí se připojují pouze přes oddělené rozhraní. Převzaté komponenty a jejich licence jsou uvedeny v `NOTICE`.
+Rozhraní a návrh pracovních postupů vycházejí z veřejně dostupných principů projektů Open WebUI, OpenCode, Vane, agenticSeek, Meetily a Claw Code. Jejich zdrojové kódy nejsou bez rozmyslu sloučeny do Ravenu; komponenty s nekompatibilní copyleft licencí se připojují pouze přes oddělené rozhraní. Převzaté komponenty a jejich licence jsou uvedeny v [`NOTICE`](NOTICE).
 
 ## Vývoj
 
 - Backend: `raven_control.py`
 - Desktopové okno: `desktop-electron/main.js`, bezpečný most `desktop-electron/preload.js`
 - Rozhraní: `hud/index.html`, `hud/app.css`, `hud/workbench.css`, `hud/hud.js`, `hud/workbench.js`
-- Agentní runtime: `agent_runtime.py` a `raven_intelligence.py` (Pydantic AI Slim, Browser Use, Crawl4AI, MCP; nejvýše dva těžcí agenti)
+- Mozek a agentní runtime: `raven_brain.py`, `agent_runtime.py` a `raven_intelligence.py` (plánování, trvalé kontrolní body, ověřování, Pydantic AI Slim, Browser Use, Crawl4AI, MCP; nejvýše dva těžcí agenti)
 - Výchozí konfigurace: `defaults/`
+- Pravidla pro Codex na každém PC a disku: `AGENTS.md`
 - Lokální běhová data: `runtime/`
 
-Před vydáním se kontroluje syntaxe Pythonu a JavaScriptu, lokální API, načtení rozhraní, psaní do editoru, historie, telemetrie, skutečný souborový nástroj přes chat a vytvoření instalačního EXE. GitHub se aktualizuje pouze na výslovný pokyn uživatele.
+Před vydáním se kontroluje syntaxe Pythonu, PowerShellu a JavaScriptu, lokální API, souběh agentů, jednorázová potvrzení, zotavení úloh, načtení skutečného Electron rozhraní, psaní do editoru, historie, telemetrie, skutečný souborový nástroj přes chat a obsah instalačního EXE. GitHub se aktualizuje pouze na výslovný pokyn uživatele.
 
 Výsledné soubory jsou `desktop/Raven-Desktop.exe` pro běžné spuštění a `desktop-dist/Raven-1.0-Setup.exe` jako instalační balíček. Instalační EXE obsahuje zdrojovou část Ravenu 1.0 a na čistém podporovaném počítači spustí přípravu bezplatných závislostí.
 
 ## Kredity
 
-Instalátor Raven 1.0 stahuje oficiální OpenJarvis jako samostatnou běhovou závislost; jeho zdrojový kód není součástí tohoto repozitáře ani instalačního EXE. Další samostatné open-source knihovny jsou uvedeny v souboru [`NOTICE`](NOTICE). Rozhraní a pracovní postupy byly navrženy také s přihlédnutím k veřejným principům projektů Open WebUI, OpenCode, Vane, Meetily a agenticSeek. Jejich zdrojový kód není součástí Ravenu 1.0 a projekt si nenárokuje jejich značky ani podporu.
+Instalátor Raven 1.0 stahuje oficiální OpenJarvis jako samostatnou běhovou závislost; jeho zdrojový kód není součástí tohoto repozitáře ani instalačního EXE. Další samostatné open-source knihovny jsou uvedeny v souboru [`NOTICE`](NOTICE). Rozhraní a pracovní postupy byly navrženy také s přihlédnutím k veřejným principům projektů Open WebUI, OpenCode, Vane, Meetily, agenticSeek a Claw Code. Jejich zdrojový kód není součástí Ravenu 1.0 a projekt si nenárokuje jejich značky ani podporu.
 
 ## Licence
 

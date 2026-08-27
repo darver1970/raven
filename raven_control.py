@@ -22,6 +22,13 @@ from typing import Any
 from uuid import uuid4
 
 from agent_runtime import AgentTask, RUNTIME as AGENT_RUNTIME
+from raven_brain import (
+    BRAIN,
+    ExecutionEvidence,
+    TaskIntent,
+    TaskStatus,
+    rank_free_providers,
+)
 from raven_intelligence import (
     create_project_snapshot,
     detect_local_file_action,
@@ -66,6 +73,8 @@ PROJECT_MEMORY_LOCK = threading.Lock()
 CHAT_LOCK = threading.Lock()
 EVENT_LOCK = threading.Lock()
 EVENTS: deque[dict[str, Any]] = deque(maxlen=600)
+EVENT_SEQUENCE = 0
+SERVER_SESSION_ID = uuid4().hex
 STARTUP_VALUE_NAME = "Raven1"
 STARTUP_REGISTRY_PATH = r"HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
 LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -111,6 +120,8 @@ BUILTIN_AGENTS = [
 
 RAVEN_SYSTEM_PROMPT = """Jsi centrální textový asistent Raven 1.0. Odpovídej česky, pokud uživatel nepoužije jiný jazyk.
 Buď přesný, praktický a stručný. Nevymýšlej si fakta, dokončené akce ani výsledky nástrojů.
+Nikdy netvrď, že jsi vytvořil, upravil, smazal, spustil, nainstaloval nebo nahrál něco, pokud Raven nemá ověřený výsledek příslušného nástroje.
+Když nástroj nebyl použit nebo jeho výsledek nebyl ověřen, popiš pouze návrh či omezení a nesděluj akci jako dokončenou.
 Výchozí formát odpovědi: krátký výsledek, potom jasné body nebo číslované kroky. Dlouhé odstavce rozděl.
 Kód dávej do samostatných Markdown bloků. Důležité upozornění zvýrazni. Nadpis použij jen když pomáhá orientaci.
 Pokud něco nelze ověřit, řekni to. Interní chain-of-thought nezobrazuj. Do odpovědi nevkládej vlastní provozní stav, název aktivního modelu ani tvrzení online/offline; tyto ověřené údaje zobrazuje rozhraní Ravenu samo.
@@ -303,7 +314,14 @@ def delete_chat(chat_id: str) -> dict[str, Any]:
         return payload
 
 
-def record_task(prompt: str, provider: str, model: str, status: str, result: str = "") -> None:
+def record_task(
+    prompt: str,
+    provider: str,
+    model: str,
+    status: str,
+    result: str = "",
+    brain_task_id: str = "",
+) -> None:
     payload = load_document(TASK_HISTORY_PATH, "tasks")
     tasks = payload.get("tasks", [])
     if not isinstance(tasks, list):
@@ -311,7 +329,7 @@ def record_task(prompt: str, provider: str, model: str, status: str, result: str
     tasks.append({
         "id": uuid4().hex, "created_at": datetime.now().isoformat(timespec="seconds"),
         "prompt": prompt[:1000], "provider": provider, "model": model[:120],
-        "status": status, "result": result[:2000],
+        "status": status, "result": result[:2000], "brain_task_id": brain_task_id[:32],
     })
     payload["tasks"] = tasks[-200:]
     save_document(TASK_HISTORY_PATH, payload)
@@ -743,12 +761,17 @@ def record_active_provider(provider: str) -> None:
         })
 
 
-def automatic_provider_order() -> list[str]:
-    """Vrátí bezplatné cloudy v bezpečném pořadí a lokální model až nakonec."""
+def automatic_provider_order(intent: TaskIntent | str = TaskIntent.CHAT) -> list[str]:
+    """Vrátí vhodné bezplatné cloudy a lokální model vždy až nakonec."""
     secrets = load_cloud_secrets()
-    preferred = ("gemini_free", "openrouter_free", "groq_free", "cerebras_free", "mistral_free", "github_models_free", "cloudflare_free")
-    online = [provider for provider in preferred if provider in secrets and not provider_circuit_open(provider)]
-    return [*online, "local"]
+    available = [
+        provider for provider in PROVIDERS
+        if provider not in {"automatic"}
+        and (provider == "local" or provider in secrets)
+        and (provider == "local" or not provider_circuit_open(provider))
+    ]
+    health = load_document(PROVIDER_HEALTH_PATH, "providers").get("providers", {})
+    return rank_free_providers(available, intent, health if isinstance(health, dict) else {})
 
 
 def provider_circuit_open(provider: str) -> bool:
@@ -791,11 +814,11 @@ def record_provider_health(provider: str, succeeded: bool, started_at: datetime)
 
 
 def automatic_provider_request(
-    messages: list[dict[str, object]], model: str = "",
+    messages: list[dict[str, object]], model: str = "", intent: TaskIntent | str = TaskIntent.CHAT,
 ) -> tuple[str, str, list[dict[str, str]]]:
     """Zkusí jen bezplatné cloudy a lokální model při kvótě či nedostupnosti."""
     fallbacks: list[dict[str, str]] = []
-    for provider in automatic_provider_order():
+    for provider in automatic_provider_order(intent):
         started_at = datetime.now()
         try:
             answer = local_model_request(messages, model) if provider == "local" else provider_request(provider, messages, model)
@@ -1024,20 +1047,27 @@ def clean_obsolete_memory() -> None:
         if len(cleaned) != len(memory["entries"]):
             memory["entries"] = cleaned
             memory["project"] = "Raven 1.0"
-            memory["summary"] = "Lokální textový Raven 1.0 pro Windows uložený v C:\\Raven."
+            memory["summary"] = f"Lokální textový Raven 1.0 pro Windows uložený v {ROOT}."
             save_document(PROJECT_MEMORY_PATH, memory)
 
 
 def emit_event(step: str, status: str = "working", **details: Any) -> dict[str, Any]:
     """Zapíše krátkou provozní událost pro živý panel bez interního uvažování."""
-    event = {
-        "id": f"{int(time.time() * 1000)}-{uuid4().hex[:6]}",
-        "step": step,
-        "status": status,
-        "created_at": datetime.now().isoformat(timespec="milliseconds"),
-        **{key: value for key, value in details.items() if value is not None},
-    }
+    global EVENT_SEQUENCE
     with EVENT_LOCK:
+        EVENT_SEQUENCE += 1
+        event = {
+            "schema_version": 1,
+            "id": f"{int(time.time() * 1000)}-{uuid4().hex[:6]}",
+            "sequence": EVENT_SEQUENCE,
+            "session_id": SERVER_SESSION_ID,
+            "event_type": f"brain.{step}",
+            "step": step,
+            "status": status,
+            "provenance": "live",
+            "created_at": datetime.now().isoformat(timespec="milliseconds"),
+            **{key: value for key, value in details.items() if value is not None},
+        }
         EVENTS.append(event)
     try:
         sync_agent_event(event)
@@ -1046,12 +1076,18 @@ def emit_event(step: str, status: str = "working", **details: Any) -> dict[str, 
     return event
 
 
-def recent_events(after: str = "") -> list[dict[str, Any]]:
+def recent_events(after: str = "", chat_id: str = "", task_id: str = "") -> list[dict[str, Any]]:
+    """Vrati jen udalosti zvoleneho chatu nebo ukolu, aby se chaty nemichaly."""
     with EVENT_LOCK:
         values = list(EVENTS)
+    if chat_id:
+        values = [item for item in values if str(item.get("chat_id", "")) == chat_id]
+    if task_id:
+        values = [item for item in values if str(item.get("task_id", "")) == task_id]
     if not after:
         return values[-80:]
-    return values[values.index(next((item for item in values if item["id"] == after), values[-1])) + 1:] if values else []
+    index = next((position for position, item in enumerate(values) if item["id"] == after), -1)
+    return values[index + 1:] if index >= 0 else values[-80:]
 
 
 def run_agent_stage(agent_id: str, prompt: str, operation: Any, *, requires_permission: bool = True) -> Any:
@@ -1090,12 +1126,12 @@ def generate_artifact_content(prompt: str, target: str) -> tuple[str, str, list[
     all_fallbacks: list[dict[str, str]] = []
     last_error = "Coding agent nevygeneroval obsah souboru."
     last_provider = "artifact-generator"
-    for attempt in range(1):
+    for attempt in range(2):
         messages: list[dict[str, object]] = [
             {"role": "system", "content": system},
             {"role": "user", "content": prompt[:5000] + ("\nPredchozi vystup byl neuplny. Vytvor kratsi, ale kompletni verzi se vsemi uzaviracimi znackami." if attempt else "")},
         ]
-        provider, answer, fallbacks = automatic_provider_request(messages, "automatic")
+        provider, answer, fallbacks = automatic_provider_request(messages, "automatic", TaskIntent.CODING)
         last_provider = provider
         all_fallbacks.extend(fallbacks)
         fenced = re.search(r"```(?:[a-zA-Z0-9_-]+)?\s*\r?\n([\s\S]*?)```", answer)
@@ -1509,10 +1545,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", self.cors_origin())
             self.end_headers()
             last_id = self.headers.get("Last-Event-ID", "") or str(query.get("after", [""])[0])
+            chat_id = str(query.get("chat_id", [""])[0])[:128]
+            task_id = str(query.get("task_id", [""])[0])[:32]
             deadline = time.time() + 25
             try:
                 while time.time() < deadline:
-                    values = recent_events(last_id)
+                    values = recent_events(last_id, chat_id=chat_id, task_id=task_id)
                     for event in values:
                         payload = json.dumps(event, ensure_ascii=False)
                         self.wfile.write(f"id: {event['id']}\ndata: {payload}\n\n".encode("utf-8"))
@@ -1527,7 +1565,20 @@ class Handler(BaseHTTPRequestHandler):
         if request_path == "/project-index/search":
             self.send_json(search_project_index(str(query.get("q", [""])[0])))
         elif request_path == "/events/recent":
-            self.send_json({"events": recent_events(str(query.get("after", [""])[0]))})
+            self.send_json({"events": recent_events(
+                str(query.get("after", [""])[0]),
+                chat_id=str(query.get("chat_id", [""])[0])[:128],
+                task_id=str(query.get("task_id", [""])[0])[:32],
+            )})
+        elif request_path == "/brain/status":
+            self.send_json(BRAIN.status(str(query.get("chat_id", [""])[0])[:128]))
+        elif request_path == "/brain/tasks":
+            limit_text = str(query.get("limit", ["50"])[0])
+            tasks = BRAIN.store.list(
+                chat_id=str(query.get("chat_id", [""])[0])[:128],
+                limit=int(limit_text) if limit_text.isdigit() else 50,
+            )
+            self.send_json({"tasks": [BRAIN.public_task(task) for task in tasks]})
         elif request_path == "/agent-runtime/status":
             self.send_json(AGENT_RUNTIME.status())
         elif request_path == "/knowledge-library":
@@ -1571,6 +1622,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"error": "Nenalezeno"}, 404)
 
     def do_POST(self) -> None:
+        brain_task_id = ""
+        brain_chat_id = ""
         try:
             length = int(self.headers.get("Content-Length", "0"))
             data = json.loads(self.rfile.read(min(length, 12000)).decode("utf-8"))
@@ -1700,26 +1753,76 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(provider_status())
                 return
             if self.path == "/chat":
-                emit_event("received", agent="raven", result="Požadavek přijat")
                 settings = load_settings()
                 provider = normalize_provider(settings.get("ai_provider", "local"))
                 raw_messages = data.get("messages", [])
                 if not isinstance(raw_messages, list):
                     raise ValueError("Zprávy pro online model mají neplatný formát.")
                 prompt = next((str(item.get("content", "")) for item in reversed(raw_messages) if isinstance(item, dict) and item.get("role") == "user"), "")
-                emit_event("analysis", agent="raven", model=str(data.get("model", "automatic")), result="Rozpoznávám záměr a oprávnění")
+                if not prompt.strip():
+                    raise ValueError("Poslední uživatelská zpráva je prázdná.")
+                brain_chat_id = str(data.get("chat_id", ""))[:128]
+                requested_brain_task_id = str(data.get("brain_task_id", ""))[:32]
+                if data.get("confirmed") is True and requested_brain_task_id:
+                    brain_task = BRAIN.claim_confirmation(
+                        requested_brain_task_id,
+                        chat_id=brain_chat_id,
+                        prompt=prompt,
+                        confirmation_token=str(data.get("confirmation_token", "")),
+                    )
+                else:
+                    brain_task = BRAIN.create_task(
+                        prompt,
+                        chat_id=brain_chat_id,
+                        permission_mode=str(settings.get("permission_mode", "confirm")),
+                        requested_model=str(data.get("model", "automatic")),
+                    )
+                    brain_task = BRAIN.set_status(brain_task.id, TaskStatus.RUNNING)
+                brain_task_id = brain_task.id
+
+                def brain_event(step: str, status: str = "working", **details: Any) -> dict[str, Any]:
+                    return emit_event(
+                        step,
+                        status,
+                        task_id=brain_task_id,
+                        chat_id=brain_chat_id,
+                        **details,
+                    )
+
+                brain_event("received", agent="raven", result="Požadavek přijat")
+                brain_event(
+                    "analysis",
+                    "completed",
+                    agent="raven",
+                    model=str(data.get("model", "automatic")),
+                    result=f"Záměr: {brain_task.intent.value} · složitost: {brain_task.complexity.value}",
+                )
                 local_action = run_agent_stage("planner", prompt, lambda: detect_local_file_action(prompt), requires_permission=False)
-                emit_event("plan", "completed", agent="planner", result="Plán připraven")
+                BRAIN.mark_next_for_agent(brain_task_id, "planner", "completed", "Požadavek rozložen na ověřitelné kroky")
+                brain_event(
+                    "plan",
+                    "completed",
+                    agent="planner",
+                    result=f"Plán připraven · {len(brain_task.plan)} kroky",
+                )
                 if local_action:
                     generation_fallbacks: list[dict[str, str]] = []
                     if local_action["action"] in {"create_text_file", "write_text_file"} and not str(local_action.get("content", "")) and Path(str(local_action["path"])).suffix.lower() in {".html", ".css", ".js", ".json", ".md"}:
-                        emit_event("edit", agent="coding", tool="artifact-generator", result=f"Generuji obsah {Path(str(local_action['path'])).name}")
+                        brain_event("edit", agent="coding", tool="artifact-generator", result=f"Generuji obsah {Path(str(local_action['path'])).name}")
                         generation_provider, generated_content, generation_fallbacks = run_agent_stage(
                             "coding", prompt, lambda: generate_artifact_content(prompt, str(local_action["path"])), requires_permission=False,
                         )
                         local_action["content"] = generated_content
-                        emit_event("edit", "completed", agent="coding", model=generation_provider, tool="artifact-generator", result=f"Vygenerováno {len(generated_content)} znaků")
-                    emit_event("execute", agent="files", tool=str(local_action["action"]), result=str(local_action["path"]))
+                        BRAIN.add_evidence(brain_task_id, ExecutionEvidence(
+                            kind="artifact",
+                            source=generation_provider,
+                            summary=f"Vygenerován syntakticky kontrolovaný obsah {Path(str(local_action['path'])).name}",
+                            verified=bool(generated_content.strip()),
+                            details={"characters": len(generated_content)},
+                        ))
+                        brain_event("edit", "completed", agent="coding", model=generation_provider, tool="artifact-generator", result=f"Vygenerováno {len(generated_content)} znaků")
+                    BRAIN.mark_next_for_agent(brain_task_id, "files", "running", str(local_action["path"]))
+                    brain_event("execute", agent="files", tool=str(local_action["action"]), result=str(local_action["path"]))
                     tool_result = run_agent_stage(
                         "files", prompt,
                         lambda: execute_file_action(
@@ -1730,35 +1833,89 @@ class Handler(BaseHTTPRequestHandler):
                         ),
                     )
                     if tool_result["status"] == "confirmation_required":
-                        self.send_json({"confirmation_required": True, "action": local_action, "message": tool_result["message"]}, 409)
+                        waiting_task, confirmation_token = BRAIN.request_confirmation(brain_task_id)
+                        brain_event("execute", "waiting_confirmation", agent="files", tool=str(local_action["action"]), result=tool_result["message"])
+                        self.send_json({
+                            "confirmation_required": True,
+                            "action": local_action,
+                            "message": tool_result["message"],
+                            "brain_task_id": brain_task_id,
+                            "confirmation_token": confirmation_token,
+                            "plan": [step.model_dump(mode="json") for step in waiting_task.plan],
+                        }, 409)
                         return
-                    emit_event("execute", "completed", agent="files", tool=str(local_action["action"]), result=tool_result["message"])
-                    emit_event("test", "completed", agent="tester", tool="read-back", result="Výsledek ověřen")
+                    verified_tool = tool_result.get("verified") is True
+                    BRAIN.mark_next_for_agent(brain_task_id, "files", "completed", tool_result["message"])
+                    BRAIN.add_evidence(brain_task_id, ExecutionEvidence(
+                        kind="file",
+                        source=str(local_action["action"]),
+                        summary=str(tool_result["message"]),
+                        verified=verified_tool,
+                        details={
+                            "path": str(tool_result.get("path", "")),
+                            "status": str(tool_result.get("status", "")),
+                            "bytes": int(tool_result.get("bytes", 0) or 0),
+                        },
+                    ))
+                    brain_event("execute", "completed", agent="files", tool=str(local_action["action"]), result=tool_result["message"])
+                    BRAIN.mark_next_for_agent(brain_task_id, "tester", "completed" if verified_tool else "skipped", "Ověření čtením výsledku" if verified_tool else "Simulace bez zápisu")
+                    brain_event("test", "completed" if verified_tool else "skipped", agent="tester", tool="read-back", result="Výsledek ověřen" if verified_tool else "Simulace nic nezměnila")
                     answer = tool_result["message"]
                     selected_provider, fallbacks = "local-tool", generation_fallbacks
                 else:
                     library_settings = load_library_settings()
                     include_library = provider == "local" or library_settings.get("online_context") is True
                     messages = prepare_chat_messages(raw_messages, include_library=include_library)
-                    emit_event("context", "completed", agent="project-indexer", result="Paměť a relevantní soubory připojeny")
-                    emit_event("execute", agent="raven", tool="model-router", result="Čekám na bezplatný model")
+                    brain_event("context", "completed", agent="project-indexer", result="Paměť a relevantní soubory připojeny")
+                    brain_event("execute", agent="raven", tool="model-router", result="Čekám na vhodný bezplatný model")
                     operation = (
-                        lambda: automatic_provider_request(messages, str(data.get("model", "")))
+                        lambda: automatic_provider_request(messages, str(data.get("model", "")), brain_task.intent)
                         if provider == "automatic"
                         else (provider, provider_request(provider, messages, str(data.get("model", ""))), [])
                     )
                     selected_provider, answer, fallbacks = run_agent_stage("raven", prompt, operation, requires_permission=False)
+                    BRAIN.add_evidence(brain_task_id, ExecutionEvidence(
+                        kind="model_response",
+                        source=selected_provider,
+                        summary="Model vrátil neprázdnou odpověď.",
+                        verified=bool(answer.strip()),
+                        details={"characters": len(answer), "fallbacks": len(fallbacks)},
+                    ))
+                    BRAIN.mark_next_for_agent(brain_task_id, "raven", "completed", f"Odpověď přes {selected_provider}")
                 record_active_provider(selected_provider)
-                record_task(prompt, selected_provider, str(data.get("model", "")), "completed", answer)
-                chat_id = str(data.get("chat_id", ""))
-                if chat_id:
-                    append_chat_answer(chat_id, answer)
-                review = run_agent_stage("reviewer", prompt, lambda: {"nonempty": bool(answer.strip()), "provider": selected_provider}, requires_permission=False)
-                if not review["nonempty"]:
-                    raise ValueError("Kontrola výsledku zjistila prázdnou odpověď.")
-                emit_event("review", "completed", agent="reviewer", model=str(data.get("model", "")), result="Výsledek ověřen")
-                emit_event("done", "completed", agent="raven", model=str(data.get("model", "")), result=f"Dokončeno přes {selected_provider}")
-                self.send_json({"provider": selected_provider, "answer": answer, "fallbacks": fallbacks})
+                completed_task, review = run_agent_stage(
+                    "reviewer",
+                    prompt,
+                    lambda: BRAIN.complete(brain_task_id, answer),
+                    requires_permission=False,
+                )
+                if not review.accepted:
+                    raise ValueError("Kontrola výsledku odmítla odpověď: " + "; ".join(review.errors))
+                BRAIN.mark_next_for_agent(brain_task_id, "reviewer", "completed", f"Důvěra: {review.confidence}")
+                record_task(prompt, selected_provider, str(data.get("model", "")), "completed", answer, brain_task_id)
+                if brain_chat_id:
+                    try:
+                        append_chat_answer(brain_chat_id, answer)
+                    except ValueError:
+                        save_chat({
+                            "id": brain_chat_id,
+                            "title": prompt[:80] or "Nový chat",
+                            "messages": raw_messages,
+                        })
+                        append_chat_answer(brain_chat_id, answer)
+                brain_event("review", "completed", agent="reviewer", model=str(data.get("model", "")), result=f"Výsledek ověřen · důvěra {review.confidence}")
+                brain_event("done", "completed", agent="raven", model=str(data.get("model", "")), result=f"Dokončeno přes {selected_provider}")
+                self.send_json({
+                    "provider": selected_provider,
+                    "answer": answer,
+                    "fallbacks": fallbacks,
+                    "brain_task_id": brain_task_id,
+                    "intent": completed_task.intent.value,
+                    "complexity": completed_task.complexity.value,
+                    "review": review.model_dump(mode="json"),
+                    "evidence": [item.model_dump(mode="json") for item in completed_task.evidence],
+                    "plan": [step.model_dump(mode="json") for step in completed_task.plan],
+                })
                 return
             if self.path == "/project-index/rebuild":
                 require_permission(data, "vytvoření lokálního indexu projektu")
@@ -1965,8 +2122,22 @@ class Handler(BaseHTTPRequestHandler):
                 save_rules(rules)
             logging.info("Uloženo pravidlo: %s", rule[:120])
             self.send_json({"rules": rules, "saved": rule})
-        except (ValueError, OSError, json.JSONDecodeError) as error:
-            emit_event("error", "error", agent="raven", error=str(error)[:500], result="Úkol skončil chybou")
+        except (ValueError, OSError, TypeError, KeyError, IndexError, json.JSONDecodeError) as error:
+            if brain_task_id:
+                try:
+                    failed_task = BRAIN.fail(brain_task_id, str(error))
+                    record_task(failed_task.prompt, "", failed_task.requested_model, "failed", str(error), brain_task_id)
+                except (ValueError, OSError):
+                    logging.exception("Nepodařilo se uložit selhání úkolu mozku %s", brain_task_id)
+            emit_event(
+                "error",
+                "error",
+                agent="raven",
+                task_id=brain_task_id or None,
+                chat_id=brain_chat_id or None,
+                error=str(error)[:500],
+                result="Úkol skončil chybou",
+            )
             self.send_json({"error": str(error)}, 400)
 
     def log_message(self, format_text: str, *args: Any) -> None:
@@ -1975,6 +2146,7 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     clean_obsolete_memory()
+    BRAIN.recover_interrupted()
     server = ThreadingHTTPServer(("127.0.0.1", CONTROL_PORT), Handler)
 
     def startup_diagnostic() -> None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import re
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
@@ -49,25 +50,34 @@ class AgentRuntime:
 
     def __init__(self, limit: int = 2) -> None:
         self.limit = max(1, min(2, limit))
-        self._semaphore = asyncio.Semaphore(self.limit)
+        self._semaphore = threading.BoundedSemaphore(self.limit)
+        self._state_lock = threading.Lock()
         self.state = RuntimeState()
 
     async def run(self, task: AgentTask, operation: Callable[[AgentTask], Awaitable[Any]]) -> Any:
         if task.permission_mode == "denied":
             raise PermissionError("Agentní provedení je v režimu Zakázáno vypnuté.")
-        self.state.queued += 1
-        async with self._semaphore:
-            self.state.queued -= 1
-            self.state.active += 1
+        with self._state_lock:
+            self.state.queued += 1
+        await asyncio.to_thread(self._semaphore.acquire)
+        try:
+            with self._state_lock:
+                self.state.queued -= 1
+                self.state.active += 1
             try:
                 result = await asyncio.wait_for(operation(task), timeout=300)
-                self.state.completed += 1
+                with self._state_lock:
+                    self.state.completed += 1
                 return result
             except Exception:
-                self.state.failed += 1
+                with self._state_lock:
+                    self.state.failed += 1
                 raise
             finally:
-                self.state.active -= 1
+                with self._state_lock:
+                    self.state.active -= 1
+        finally:
+            self._semaphore.release()
 
     def status(self) -> dict[str, Any]:
         packages = {
@@ -78,13 +88,21 @@ class AgentRuntime:
             "playwright": "Playwright",
         }
         components = [{"id": module, "name": name, "installed": importlib.util.find_spec(module) is not None} for module, name in packages.items()]
+        with self._state_lock:
+            state = RuntimeState(
+                active=self.state.active,
+                queued=self.state.queued,
+                completed=self.state.completed,
+                failed=self.state.failed,
+                details=dict(self.state.details),
+            )
         return {
             "free_only": True,
             "max_heavy_agents": self.limit,
-            "active": self.state.active,
-            "queued": self.state.queued,
-            "completed": self.state.completed,
-            "failed": self.state.failed,
+            "active": state.active,
+            "queued": state.queued,
+            "completed": state.completed,
+            "failed": state.failed,
             "components": components,
             "coding_agent": {"name": "Raven Coding", "mode": "built-in", "installed": True},
             "search": {"searxng": "external-local-service", "crawl4ai": "installed"},

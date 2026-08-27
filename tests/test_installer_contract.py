@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 
@@ -34,6 +35,11 @@ def test_bootstrap_waits_for_confirmed_installer_process() -> None:
     assert "-Verb RunAs" in main_source
     assert "installer_process_finished" in main_source
     assert "if (!bootstrapInProgress && !launcherDelegationInProgress)" in main_source
+
+
+def test_electron_smoke_profile_can_be_isolated_from_user_profile() -> None:
+    main_source = (ROOT / "desktop-electron" / "main.js").read_text(encoding="utf-8")
+    assert "RAVEN_ELECTRON_PROFILE" in main_source
     assert "-EncodedCommand" in main_source
     assert "process.env.SystemRoot" in main_source
     assert "'-NoLaunch'" in main_source
@@ -101,6 +107,23 @@ def test_installer_runs_final_health_check_before_completion() -> None:
     assert "install-verification.json" in installer_source
     assert "py_compile.compile" in installer_source
     assert "--check" in installer_source
+
+
+def test_installer_copies_and_validates_brain_module() -> None:
+    installer_source = (ROOT / "install.ps1").read_text(encoding="utf-8-sig")
+
+    assert "'raven_brain.py'" in installer_source
+    assert "(Join-Path $installRoot 'raven_brain.py')" in installer_source
+    assert '"raven_brain.py"' in installer_source
+
+
+def test_installer_preserves_codex_project_rules() -> None:
+    installer_source = (ROOT / "install.ps1").read_text(encoding="utf-8-sig")
+    package = json.loads((ROOT / "desktop-electron" / "package.json").read_text(encoding="utf-8"))
+
+    assert "'AGENTS.md'" in installer_source
+    filters = package["build"]["extraResources"][0]["filter"]
+    assert "AGENTS.md" in filters
 
 
 def test_launcher_does_not_stop_foreign_ollama() -> None:

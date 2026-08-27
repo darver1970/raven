@@ -41,6 +41,7 @@ setProgress = label => {
 };
 
 function renderLiveEvent(event) {
+  if (event.chat_id && state.activeChatId && event.chat_id !== state.activeChatId) return;
   clearTimeout(liveWorkHideTimer);
   liveWorkHideTimer = null;
   const order = ["received", "analysis", "plan", "context", "execute", "edit", "test", "review", "done"];
@@ -50,7 +51,7 @@ function renderLiveEvent(event) {
     node.classList.toggle("done", target >= 0 && index < target);
     node.title = index === target ? [event.agent, event.model, event.tool, event.result, event.error].filter(Boolean).join(" · ") : "";
   });
-  if (event.step === "received") { state.liveEvents = []; state.liveEventChatId = state.activeChatId; }
+  if (event.step === "received") { state.liveEvents = []; state.liveEventChatId = event.chat_id || state.activeChatId; }
   state.liveEvents = [...(state.liveEvents || []).filter(item => item.id !== event.id), event].slice(-18);
   renderWorkLog();
   if (event.result || event.error) notify(`${event.agent || "Raven"} · ${event.result || event.error}`, event.status === "error" ? "error" : "info");

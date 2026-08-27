@@ -29,7 +29,7 @@
         "from": "..",
         "to": "raven-project",
         "filter": [
-          ".gitignore", "LICENSE", "NOTICE", "README.md", "RELEASE_NOTES.md", "VERSION",
+          ".gitignore", "AGENTS.md", "LICENSE", "NOTICE", "README.md", "RELEASE_NOTES.md", "VERSION",
           "*.py", "*.ps1", "defaults/**/*", "hud/**/*", "desktop/raven.ico", "desktop/raven-logo.png",
           "desktop-electron/main.js", "desktop-electron/preload.js",
           "desktop-electron/package.json", "desktop-electron/package-lock.json",

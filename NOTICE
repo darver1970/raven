@@ -21,7 +21,8 @@ Integrated or optional independent components:
 - Playwright, Apache-2.0 License: https://github.com/microsoft/playwright
 - LibreHardwareMonitor, MPL-2.0: https://github.com/LibreHardwareMonitor/LibreHardwareMonitor
 - psutil, BSD 3-Clause License: https://github.com/giampaolo/psutil
-- Qwen 3.5 4B, Apache-2.0 License: https://ollama.com/library/qwen3.5:4b
+- Qwen 3.5 4B and 9B, Apache-2.0 License:
+  https://ollama.com/library/qwen3.5
 - Qwen 2.5 Coder 7B, Apache-2.0 License:
   https://ollama.com/library/qwen2.5-coder:7b
 
@@ -34,10 +35,15 @@ distributed as part of Raven 1.0):
 - Vane, MIT License: https://github.com/ItzCrazyKns/Vane
 - Meetily, MIT License: https://github.com/Zackriya-Solutions/meetily
 - agenticSeek, GPL-3.0 License: https://github.com/Fosowl/agenticSeek
+- Claw Code, MIT License: https://github.com/ultraworkers/claw-code
 
 These projects were reviewed as architectural and user-experience references.
 Raven does not claim their names, logos, endorsement, or authorship. Their
 licenses continue to govern their own code and distributions.
+
+For Claw Code, Raven uses only independently implemented architectural ideas
+such as plan/execute/verify phases, structured event contracts and deterministic
+test patterns. Claw Code source files are not distributed as part of Raven 1.0.
 
 Gemini API, OpenRouter, Groq, Cerebras, Mistral, GitHub Models and Cloudflare
 Workers AI are optional remote services. Their terms, quotas,

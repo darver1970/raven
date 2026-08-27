@@ -175,8 +175,11 @@ const ROOT = bootstrapInProgress
       ? path.resolve(path.dirname(process.execPath), '..')
       : path.resolve(__dirname, '..');
 const RUNTIME = path.join(ROOT, 'runtime');
+const ELECTRON_PROFILE_OVERRIDE = String(process.env.RAVEN_ELECTRON_PROFILE || '').trim();
 const PROFILE = bootstrapInProgress
   ? path.join(process.env.LOCALAPPDATA || INSTALLED_ROOT, 'Raven', 'bootstrap-profile')
+  : ELECTRON_PROFILE_OVERRIDE
+  ? path.resolve(ELECTRON_PROFILE_OVERRIDE)
   : path.join(RUNTIME, 'electron-profile');
 const QUARANTINE = path.join(RUNTIME, 'quarantine');
 const SNAPSHOTS = path.join(RUNTIME, 'snapshots');
