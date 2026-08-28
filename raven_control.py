@@ -3,19 +3,23 @@
 import asyncio
 import json
 import csv
+import hashlib
 import logging
 import os
 import re
 import shutil
 import sqlite3
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import unicodedata
 from collections import deque
-from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -27,6 +31,7 @@ from raven_brain import (
     ExecutionEvidence,
     TaskIntent,
     TaskStatus,
+    classify_intent,
     rank_free_providers,
 )
 from raven_intelligence import (
@@ -47,6 +52,7 @@ RULES_PATH = ROOT / "runtime" / "raven-rules.json"
 SETTINGS_PATH = ROOT / "runtime" / "raven-settings.json"
 DEFAULT_SETTINGS_PATH = ROOT / "defaults" / "raven-settings.json"
 CLOUD_SECRETS_PATH = ROOT / "runtime" / "cloud-api-secrets.json"
+CLOUD_CONFIG_PATH = ROOT / "runtime" / "cloud-provider-config.json"
 PROVIDER_HEALTH_PATH = ROOT / "runtime" / "provider-health.json"
 ACTIVE_PROVIDER_PATH = ROOT / "runtime" / "active-provider.json"
 OPENCLAW_ROOT = ROOT / "runtime" / "openclaw"
@@ -59,6 +65,7 @@ PROJECTS_PATH = ROOT / "runtime" / "raven-projects.json"
 CHATS_PATH = ROOT / "runtime" / "raven-chats.json"
 TASK_HISTORY_PATH = ROOT / "runtime" / "raven-task-history.json"
 SCHEDULES_PATH = ROOT / "runtime" / "raven-schedules.json"
+SYNC_SETTINGS_PATH = ROOT / "runtime" / "raven-sync-settings.json"
 AGENTS_PATH = ROOT / "runtime" / "raven-agents.json"
 DEFAULT_AGENTS_PATH = ROOT / "defaults" / "raven-agents.json"
 AGENT_CATALOG_PATH = ROOT / "defaults" / "raven-agent-catalog.json"
@@ -72,6 +79,9 @@ LOG_PATH = ROOT / "runtime" / "raven-control.log"
 PROJECT_MEMORY_LOCK = threading.Lock()
 CHAT_LOCK = threading.Lock()
 EVENT_LOCK = threading.Lock()
+AGENT_STATE_LOCK = threading.RLock()
+SCHEDULE_STATE_LOCK = threading.RLock()
+AGENT_JOB_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="raven-agent")
 EVENTS: deque[dict[str, Any]] = deque(maxlen=600)
 EVENT_SEQUENCE = 0
 SERVER_SESSION_ID = uuid4().hex
@@ -83,6 +93,7 @@ logging.basicConfig(filename=LOG_PATH, level=logging.INFO, encoding="utf-8")
 
 PROVIDERS: dict[str, dict[str, str]] = {
     "local": {"label": "Lokální Ollama", "model": ""},
+    "codex_plus": {"label": "Codex · ChatGPT Plus", "model": "Codex subscription"},
     "gemini_free": {"label": "Gemini Free", "model": "gemini-3.5-flash"},
     "openrouter_free": {"label": "OpenRouter Free", "model": "openrouter/free"},
     "groq_free": {"label": "Groq Free", "model": "llama-3.1-8b-instant"},
@@ -90,7 +101,7 @@ PROVIDERS: dict[str, dict[str, str]] = {
     "mistral_free": {"label": "Mistral Free", "model": "mistral-small-latest"},
     "github_models_free": {"label": "GitHub Models Free", "model": "gpt-4o-mini"},
     "cloudflare_free": {"label": "Cloudflare Workers AI Free", "model": "@cf/meta/llama-3.1-8b-instruct"},
-    "automatic": {"label": "Automaticky", "model": "bezplatný online router, pak lokální"},
+    "automatic": {"label": "Automaticky", "model": "Gemini, OpenRouter, další bezplatné zdroje a lokální Ollama"},
 }
 
 OPENAI_COMPATIBLE_PROVIDERS = {
@@ -116,6 +127,26 @@ BUILTIN_AGENTS = [
     {"id": "project-indexer", "name": "Project Indexer", "group": "Memory", "role": "Lokální mapa projektu a fulltextový index FTS5", "tools": ["sqlite-fts5", "project-map"], "dependencies": ["files"], "model": "local"},
     {"id": "security", "name": "Security", "group": "Security", "role": "Oprávnění, prompt injection a ochrana tajemství", "tools": ["permission-gate", "quarantine", "secret-filter"], "dependencies": ["raven"], "model": "local"},
     {"id": "telemetry", "name": "Telemetry", "group": "System", "role": "Výkon, procesy, stabilita a kvóty", "tools": ["psutil", "provider-health", "logs"], "dependencies": ["raven"], "model": "local"},
+    {"id": "goal-manager", "name": "Goal Manager", "group": "Core", "role": "Trvalé cíle, kontrolní body a pokračování po restartu", "tools": ["brain-tasks", "checkpoints", "recovery"], "dependencies": ["raven", "planner"], "model": "automatic"},
+    {"id": "permission-guard", "name": "Permission Guard", "group": "Security", "role": "Vynucení režimů Plný přístup, Potvrzení a Zakázáno", "tools": ["permission-gate", "audit"], "dependencies": ["security"], "model": "local"},
+    {"id": "debugger", "name": "Debugger", "group": "Coding", "role": "Hledání příčin chyb z kódu, logů a reprodukce", "tools": ["logs", "terminal", "project-index"], "dependencies": ["coding"], "model": "qwen2.5-coder:7b"},
+    {"id": "refactoring", "name": "Refactoring", "group": "Coding", "role": "Kontrolované strukturální úpravy bez změny chování", "tools": ["monaco", "git-diff", "tests"], "dependencies": ["coding", "tester"], "model": "qwen2.5-coder:7b"},
+    {"id": "terminal", "name": "Terminal", "group": "Tools", "role": "Integrovaný PowerShell a ověřené příkazy", "tools": ["powershell", "process-tree"], "dependencies": ["permission-guard"], "model": "local"},
+    {"id": "git", "name": "Git", "group": "Tools", "role": "Stav, diff, větve, snapshoty a potvrzené commity", "tools": ["git", "diff", "snapshot"], "dependencies": ["files", "permission-guard"], "model": "local"},
+    {"id": "documentation", "name": "Documentation", "group": "Quality", "role": "README, návody, licence a technická dokumentace", "tools": ["markdown", "project-index"], "dependencies": ["coding", "reviewer"], "model": "automatic"},
+    {"id": "visual-qa", "name": "Visual QA", "group": "Testing", "role": "Snímky, vizuální regrese a kontrola rozhraní", "tools": ["playwright", "screenshots", "browser"], "dependencies": ["browser", "tester"], "model": "automatic"},
+    {"id": "installer", "name": "Installer", "group": "Release", "role": "Sestavení a ověření přenosného a instalačního EXE", "tools": ["electron-builder", "nsis", "install-test"], "dependencies": ["tester", "permission-guard"], "model": "local"},
+    {"id": "release", "name": "Release", "group": "Release", "role": "Kontrola verze, artefaktů a příprava vydání", "tools": ["git", "checksums", "release-notes"], "dependencies": ["installer", "reviewer"], "model": "automatic"},
+    {"id": "sync", "name": "Sync", "group": "System", "role": "Bezpečné porovnání C:, F: a Git bez slepého přepisování", "tools": ["hashes", "git-status", "robocopy-plan"], "dependencies": ["files", "git"], "model": "local"},
+    {"id": "update", "name": "Update", "group": "System", "role": "Kontrola a ověřená instalace nových vydání", "tools": ["release-feed", "checksum", "rollback"], "dependencies": ["release", "backup-recovery"], "model": "local"},
+    {"id": "diagnostics", "name": "Diagnostics", "group": "System", "role": "Souhrnná diagnostika služeb, portů, runtime a závislostí", "tools": ["doctor", "logs", "ports"], "dependencies": ["telemetry"], "model": "local"},
+    {"id": "process", "name": "Process Manager", "group": "System", "role": "Procesy, jejich strom, zdroje a bezpečné ukončení", "tools": ["psutil", "process-tree", "safe-close"], "dependencies": ["telemetry", "permission-guard"], "model": "local"},
+    {"id": "scheduler", "name": "Scheduler", "group": "Automation", "role": "Skutečné spouštění povolených naplánovaných úkolů", "tools": ["schedules", "notifications", "history"], "dependencies": ["automation", "permission-guard"], "model": "local"},
+    {"id": "automation", "name": "Automation", "group": "Automation", "role": "Opakovatelné lokální pracovní postupy", "tools": ["workflow", "powershell", "verification"], "dependencies": ["planner", "permission-guard"], "model": "automatic"},
+    {"id": "backup-recovery", "name": "Backup & Recovery", "group": "System", "role": "Jedna ověřená záloha, snapshoty a bezpečné obnovení", "tools": ["snapshot", "restore", "hashes"], "dependencies": ["files", "git"], "model": "local"},
+    {"id": "skills-manager", "name": "Skills Manager", "group": "Extensions", "role": "Lokální balíčky schopností s pravidly a testy", "tools": ["skills", "validation", "catalog"], "dependencies": ["security"], "model": "local"},
+    {"id": "plugin-manager", "name": "Plugin Manager", "group": "Extensions", "role": "Přehled, oprávnění a vypínání doplňků", "tools": ["plugins", "permissions", "audit"], "dependencies": ["security"], "model": "local"},
+    {"id": "model-router", "name": "Model Router", "group": "Core", "role": "Gemini, OpenRouter, další free zdroje a lokální fallback", "tools": ["provider-health", "free-quota", "fallback"], "dependencies": ["raven"], "model": "local"},
 ]
 
 RAVEN_SYSTEM_PROMPT = """Jsi centrální textový asistent Raven 1.0. Odpovídej česky, pokud uživatel nepoužije jiný jazyk.
@@ -126,7 +157,7 @@ Výchozí formát odpovědi: krátký výsledek, potom jasné body nebo číslov
 Kód dávej do samostatných Markdown bloků. Důležité upozornění zvýrazni. Nadpis použij jen když pomáhá orientaci.
 Pokud něco nelze ověřit, řekni to. Interní chain-of-thought nezobrazuj. Do odpovědi nevkládej vlastní provozní stav, název aktivního modelu ani tvrzení online/offline; tyto ověřené údaje zobrazuje rozhraní Ravenu samo.
 Raven řídí specializované agenty a nástroje, ale uživatel komunikuje vždy pouze s Ravenem.
-Používej jen bezplatné modely. Grok a xAI jsou vždy zakázané. Základní pořadí je Gemini Free, explicitně schválený OpenRouter Free model a nakonec lokální Ollama; další bezplatní poskytovatelé mohou sloužit jako specializované zálohy."""
+Automatický režim používá pouze bezplatné kvóty: nejdřív Gemini, potom OpenRouter, další povolené bezplatné poskytovatele a nakonec lokální Ollama. Nikdy nepoužívej placené API, automaticky nekupuj kredity a nepřepínej na placenou službu. Grok a xAI jsou vždy zakázané."""
 
 TELEMETRY_CATEGORIES = [
     {"id": "core", "label": "Základní měření", "description": "Nízká režie; doporučené pro běžný provoz."},
@@ -639,6 +670,144 @@ def normalize_provider(value: object) -> str:
     return provider
 
 
+def find_codex_cli() -> Path | None:
+    """Najde oficiální Codex CLI bez instalace nebo změny uživatelského účtu."""
+    configured = str(os.environ.get("RAVEN_CODEX_CLI", "")).strip()
+    candidates: list[Path] = []
+    if configured:
+        candidates.append(Path(configured))
+    discovered = shutil.which("codex")
+    if discovered:
+        candidates.append(Path(discovered))
+    local_app_data = str(os.environ.get("LOCALAPPDATA", "")).strip()
+    if local_app_data:
+        codex_bin = Path(local_app_data) / "OpenAI" / "Codex" / "bin"
+        if codex_bin.is_dir():
+            candidates.extend(sorted(codex_bin.glob("*/codex.exe"), key=lambda item: item.stat().st_mtime, reverse=True))
+    for candidate in candidates:
+        try:
+            resolved = candidate.expanduser().resolve()
+            if resolved.is_file() and resolved.name.lower() in {"codex", "codex.exe"}:
+                return resolved
+        except OSError:
+            continue
+    return None
+
+
+def codex_subscription_status() -> dict[str, Any]:
+    """Ověří pouze dostupnost CLI a typ přihlášení; nevrací žádné tokeny."""
+    executable = find_codex_cli()
+    if executable is None:
+        return {
+            "available": False,
+            "authenticated": False,
+            "auth_method": "",
+            "detail": "Codex CLI není na tomto počítači nainstalovaný.",
+        }
+    try:
+        result = subprocess.run(
+            [str(executable), "login", "status"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        return {
+            "available": True,
+            "authenticated": False,
+            "auth_method": "",
+            "detail": f"Stav přihlášení Codexu nelze ověřit: {str(error)[:140]}",
+        }
+    output = f"{result.stdout}\n{result.stderr}".strip()
+    chatgpt_login = result.returncode == 0 and "chatgpt" in output.lower()
+    return {
+        "available": True,
+        "authenticated": chatgpt_login,
+        "auth_method": "ChatGPT Plus" if chatgpt_login else "",
+        "detail": "Přihlášeno přes ChatGPT." if chatgpt_login else "Přihlaste Codex pomocí účtu ChatGPT Plus.",
+    }
+
+
+def start_codex_login() -> dict[str, Any]:
+    """Otevře oficiální přihlašovací tok Codexu v samostatném okně."""
+    executable = find_codex_cli()
+    if executable is None:
+        raise ValueError("Codex CLI není nainstalovaný. Nainstalujte nejdříve oficiální aplikaci Codex.")
+    creation_flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+    try:
+        subprocess.Popen(
+            [str(executable), "login"],
+            cwd=str(ROOT),
+            creationflags=creation_flags,
+            close_fds=False,
+        )
+    except OSError as error:
+        raise ValueError(f"Přihlášení Codexu nelze spustit: {str(error)[:180]}") from error
+    return {"started": True, "detail": "Dokončete přihlášení přes ChatGPT v otevřeném okně."}
+
+
+def codex_subscription_request(messages: list[dict[str, object]]) -> str:
+    """Spustí dočasný read-only Codex úkol přes existující ChatGPT předplatné."""
+    status = codex_subscription_status()
+    if not status["available"]:
+        raise ValueError("Codex CLI není nainstalovaný. Nainstalujte oficiální Codex a přihlaste se přes ChatGPT Plus.")
+    if not status["authenticated"]:
+        raise ValueError("Codex není přihlášený přes ChatGPT Plus. Použijte v Nastavení tlačítko Přihlásit přes ChatGPT.")
+    executable = find_codex_cli()
+    if executable is None:
+        raise ValueError("Codex CLI během kontroly přestal být dostupný.")
+    sanitized = [
+        {"role": str(item.get("role", "user")), "content": str(item.get("content", ""))[:5000]}
+        for item in messages[-16:]
+        if isinstance(item, dict) and str(item.get("content", "")).strip()
+    ]
+    if not sanitized:
+        raise ValueError("Dotaz pro Codex neobsahuje žádnou zprávu.")
+    transcript = "\n\n".join(f"{item['role'].upper()}:\n{item['content']}" for item in sanitized)
+    prompt = (
+        "Jsi model Codex použitý uvnitř aplikace Raven. Odpověz česky, pokud uživatel nepoužil jiný jazyk. "
+        "Tento běh je pouze pro vytvoření odpovědi: neupravuj soubory, nic neinstaluj a nespouštěj destruktivní příkazy. "
+        "Vrať pouze užitečnou odpověď pro uživatele.\n\n"
+        f"KONVERZACE:\n{transcript}"
+    )
+    output_path = Path(tempfile.gettempdir()) / f"raven-codex-{uuid4().hex}.txt"
+    try:
+        result = subprocess.run(
+            [
+                str(executable), "exec", "--ephemeral", "--sandbox", "read-only",
+                "--skip-git-repo-check", "--color", "never", "-C", str(ROOT),
+                "--output-last-message", str(output_path), "-",
+            ],
+            input=prompt,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=280,
+            check=False,
+        )
+        answer = output_path.read_text(encoding="utf-8", errors="replace").strip() if output_path.is_file() else ""
+        diagnostic = f"{result.stdout}\n{result.stderr}".strip()
+        if result.returncode != 0:
+            lowered = diagnostic.lower()
+            if any(marker in lowered for marker in ("usage limit", "rate limit", "quota", "credits")):
+                raise ProviderQuotaError("Codex dosáhl limitu zahrnutého v ChatGPT Plus.")
+            raise ValueError(f"Codex úkol selhal: {diagnostic[-300:] or 'neznámá chyba'}")
+        if not answer:
+            raise ValueError("Codex nevrátil žádnou odpověď.")
+        return answer[:24000]
+    except subprocess.TimeoutExpired as error:
+        raise ProviderTransientError("Codex úkol překročil bezpečný časový limit.") from error
+    finally:
+        try:
+            output_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def load_cloud_secrets() -> dict[str, str]:
     """Načte pouze DPAPI šifrované hodnoty uložené mimo Git."""
     data = load_document(CLOUD_SECRETS_PATH, "providers")
@@ -701,14 +870,61 @@ def save_cloud_secret(provider: str, api_key: object) -> None:
     logging.info("Uložen šifrovaný API klíč poskytovatele: %s", provider)
 
 
+def save_cloudflare_account_id(value: object) -> str:
+    """Uloží veřejný identifikátor účtu; token zůstává odděleně zašifrovaný."""
+    account_id = str(value or "").strip()
+    if not re.fullmatch(r"[0-9a-fA-F]{32}", account_id):
+        raise ValueError("Cloudflare Account ID musí obsahovat přesně 32 hexadecimálních znaků.")
+    document = load_document(CLOUD_CONFIG_PATH, "providers")
+    providers = document.setdefault("providers", {})
+    if not isinstance(providers, dict):
+        providers = {}
+        document["providers"] = providers
+    providers["cloudflare_account_id"] = account_id.lower()
+    save_document(CLOUD_CONFIG_PATH, document)
+    return account_id.lower()
+
+
+def load_cloudflare_account_id() -> str:
+    document = load_document(CLOUD_CONFIG_PATH, "providers")
+    providers = document.get("providers", {})
+    return str(providers.get("cloudflare_account_id", "")) if isinstance(providers, dict) else ""
+
+
 def provider_status() -> dict[str, Any]:
     """Vrací stav providerů bez vystavení klíčů nebo šifrovaných dat."""
     secrets = load_cloud_secrets()
     health = load_document(PROVIDER_HEALTH_PATH, "providers").get("providers", {})
-    return {"free_only": True, "forbidden": ["grok", "xai", "paid"], "providers": [
-        {"id": provider_id, "label": details["label"], "model": details["model"], "configured": provider_id in {"local", "automatic"} or provider_id in secrets, "health": health.get(provider_id, {})}
-        for provider_id, details in PROVIDERS.items()
-    ]}
+    codex = codex_subscription_status()
+    cloud_config = load_document(CLOUD_CONFIG_PATH, "providers").get("providers", {})
+    providers: list[dict[str, Any]] = []
+    for provider_id, details in PROVIDERS.items():
+        configured = provider_id in {"local", "automatic"} or provider_id in secrets
+        provider_health = health.get(provider_id, {}) if isinstance(health, dict) else {}
+        item: dict[str, Any] = {
+            "id": provider_id,
+            "label": details["label"],
+            "model": details["model"],
+            "configured": configured,
+            "health": provider_health if isinstance(provider_health, dict) else {},
+            "kind": "local" if provider_id == "local" else "automatic" if provider_id == "automatic" else "free",
+        }
+        if provider_id == "codex_plus":
+            item.update(codex)
+            item["configured"] = bool(codex["authenticated"])
+            item["kind"] = "included_subscription"
+        if provider_id == "cloudflare_free":
+            account_id = str(cloud_config.get("cloudflare_account_id", "")) if isinstance(cloud_config, dict) else ""
+            item["account_id_configured"] = bool(account_id)
+            item["configured"] = bool(provider_id in secrets and account_id)
+        providers.append(item)
+    return {
+        "free_only": True,
+        "paid_exception": None,
+        "automatic_purchases": False,
+        "forbidden": ["grok", "xai", "paid_api"],
+        "providers": providers,
+    }
 
 
 def active_provider_status() -> dict[str, str]:
@@ -730,13 +946,17 @@ def load_settings() -> dict[str, Any]:
     allowed = {
         "default_model", "internet_mode", "router_mode", "permission_mode",
         "project_start_required", "start_with_windows", "borderless_window",
-        "powershell_uac", "ai_provider", "cloud_api", "open_source_only", "simulation_mode",
+        "powershell_uac", "ai_provider", "cloud_api", "open_source_only", "simulation_mode", "ui_zoom_percent",
     }
     settings = {key: current.get(key, defaults.get(key)) for key in allowed if key in current or key in defaults}
     settings["ai_provider"] = normalize_provider(settings.get("ai_provider", "automatic"))
     settings.setdefault("router_mode", "automatic")
     settings.setdefault("permission_mode", "full")
     settings.setdefault("simulation_mode", False)
+    try:
+        settings["ui_zoom_percent"] = max(75, min(150, int(settings.get("ui_zoom_percent", 100))))
+    except (TypeError, ValueError):
+        settings["ui_zoom_percent"] = 100
     settings["storage_root"] = str(ROOT)
     if settings != current:
         save_document(SETTINGS_PATH, settings)
@@ -762,16 +982,18 @@ def record_active_provider(provider: str) -> None:
 
 
 def automatic_provider_order(intent: TaskIntent | str = TaskIntent.CHAT) -> list[str]:
-    """Vrátí vhodné bezplatné cloudy a lokální model vždy až nakonec."""
+    """Používá pouze free cloudy a lokální model; lokální fallback zůstává poslední."""
+    intent_value = TaskIntent(intent) if not isinstance(intent, TaskIntent) else intent
     secrets = load_cloud_secrets()
     available = [
         provider for provider in PROVIDERS
-        if provider not in {"automatic"}
+        if provider not in {"automatic", "codex_plus"}
         and (provider == "local" or provider in secrets)
         and (provider == "local" or not provider_circuit_open(provider))
     ]
     health = load_document(PROVIDER_HEALTH_PATH, "providers").get("providers", {})
-    return rank_free_providers(available, intent, health if isinstance(health, dict) else {})
+    ordered = rank_free_providers(available, intent_value, health if isinstance(health, dict) else {})
+    return ordered
 
 
 def provider_circuit_open(provider: str) -> bool:
@@ -816,7 +1038,7 @@ def record_provider_health(provider: str, succeeded: bool, started_at: datetime)
 def automatic_provider_request(
     messages: list[dict[str, object]], model: str = "", intent: TaskIntent | str = TaskIntent.CHAT,
 ) -> tuple[str, str, list[dict[str, str]]]:
-    """Zkusí jen bezplatné cloudy a lokální model při kvótě či nedostupnosti."""
+    """Zkusí povolené bezplatné cloudy a lokální model s bezpečným fallbackem."""
     fallbacks: list[dict[str, str]] = []
     for provider in automatic_provider_order(intent):
         started_at = datetime.now()
@@ -845,7 +1067,7 @@ def automatic_provider_request(
                 break
             logging.warning("Provider %s není dostupný, zkouším další: %s", provider, error)
             fallbacks.append({"provider": provider, "reason": str(error)[:240]})
-    raise ValueError("Automatický free-only režim nemohl získat odpověď z žádného povoleného poskytovatele ani lokálního modelu.")
+    raise ValueError("Automatický režim nemohl získat odpověď z bezplatných poskytovatelů ani lokálního modelu.")
 
 
 def local_model_request(messages: list[dict[str, object]], model: str) -> str:
@@ -910,6 +1132,10 @@ def provider_request(
     """Odešle explicitně zvolený online chat a vrátí pouze odpověď modelu."""
     if provider == "local":
         return local_model_request(messages, model)
+    if provider == "codex_plus":
+        if api_key is not None:
+            raise ValueError("Codex přes ChatGPT Plus nepoužívá API klíč.")
+        return codex_subscription_request(messages)
     if api_key is None:
         encrypted = load_cloud_secrets().get(provider)
         if not encrypted:
@@ -943,7 +1169,20 @@ def provider_request(
                 data = json.loads(response.read().decode("utf-8"))
             answer = str(data["choices"][0]["message"]["content"])
         elif provider == "cloudflare_free":
-            raise ValueError("Cloudflare Workers AI vyžaduje kromě tokenu také Account ID; nastaví se až po jeho doplnění.")
+            account_id = load_cloudflare_account_id()
+            if not account_id:
+                raise ValueError("Pro Cloudflare Workers AI nejdříve vyplňte Account ID.")
+            endpoint = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/{urllib.parse.quote(selected_model, safe='@/.-_')}"
+            request = urllib.request.Request(
+                endpoint,
+                data=json.dumps({"messages": sanitized, "max_tokens": 2000}, ensure_ascii=False).encode("utf-8"),
+                headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=45) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            result = data.get("result", {})
+            answer = str(result.get("response", "")) if isinstance(result, dict) else ""
         else:
             raise ValueError("Lokální model se online branou nepoužívá.")
     except urllib.error.HTTPError as error:
@@ -1233,33 +1472,140 @@ def search_project_index(query: str) -> dict[str, Any]:
     return {"query": text, "results": [{"path": path, "snippet": snippet} for path, snippet in rows]}
 
 
+def source_files(root: Path) -> list[Path]:
+    """Vrátí pouze přenositelný zdroj projektu, nikoli runtime, modely a cache."""
+    excluded = {".git", ".venv", "__pycache__", "node_modules", "runtime", "desktop-dist", "backup", "pyinstaller-build", "pyinstaller-spec"}
+    files: list[Path] = []
+    for current, directories, names in os.walk(root):
+        directories[:] = [name for name in directories if name.lower() not in excluded]
+        current_path = Path(current)
+        for name in names:
+            file = current_path / name
+            try:
+                if file.stat().st_size <= 20_000_000:
+                    files.append(file)
+            except OSError:
+                continue
+    return sorted(files, key=lambda file: file.relative_to(root).as_posix().lower())
+
+
+def project_identity(value: object) -> dict[str, Any]:
+    text = str(value or "").strip()
+    if not text:
+        return {"exists": False, "path": "", "error": "Cesta není nastavená."}
+    root = Path(text).expanduser().resolve()
+    if not root.is_dir():
+        return {"exists": False, "path": str(root), "error": "Projektová složka neexistuje."}
+    digest = hashlib.sha256()
+    latest = 0.0
+    files = source_files(root)
+    for file in files:
+        relative = file.relative_to(root).as_posix()
+        try:
+            content = file.read_bytes()
+            modified = file.stat().st_mtime
+        except OSError:
+            continue
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(hashlib.sha256(content).digest())
+        latest = max(latest, modified)
+    head = ""
+    branch = ""
+    changes: list[str] = []
+    if (root / ".git").exists():
+        commands = {
+            "head": ["rev-parse", "HEAD"],
+            "branch": ["branch", "--show-current"],
+            "status": ["status", "--short"],
+        }
+        results: dict[str, str] = {}
+        for key, arguments in commands.items():
+            result = subprocess.run(
+                ["git", "-c", f"safe.directory={root.as_posix()}", *arguments], cwd=root,
+                capture_output=True, text=True, encoding="utf-8", timeout=20, check=False,
+            )
+            results[key] = result.stdout.strip() if result.returncode == 0 else ""
+        head = results["head"]
+        branch = results["branch"]
+        changes = results["status"].splitlines()
+    version_path = root / "VERSION"
+    version = version_path.read_text(encoding="utf-8-sig").strip()[:40] if version_path.is_file() else ""
+    return {
+        "exists": True, "path": str(root), "version": version, "head": head, "branch": branch,
+        "working_changes": len(changes), "manifest_sha256": digest.hexdigest(), "source_files": len(files),
+        "latest_source_at": datetime.fromtimestamp(latest).astimezone().isoformat(timespec="seconds") if latest else "",
+    }
+
+
+def sync_status(include_remote: bool = False) -> dict[str, Any]:
+    settings = load_document(SYNC_SETTINGS_PATH, "settings")
+    portable = str(settings.get("portable_root", "")).strip()
+    if not portable and Path(r"F:\Raven 1.0").is_dir():
+        portable = r"F:\Raven 1.0"
+    local = project_identity(ROOT)
+    external = project_identity(portable)
+    same = bool(local.get("manifest_sha256") and local.get("manifest_sha256") == external.get("manifest_sha256"))
+    state = "synchronized" if same else "portable-missing" if not external.get("exists") else "different"
+    recommendation = "Kopie jsou shodné."
+    if state == "portable-missing":
+        recommendation = "Nastavte složku přenosné kopie. Nic se automaticky nepřepisuje."
+    elif state == "different":
+        if local.get("working_changes") or external.get("working_changes"):
+            recommendation = "Kopie se liší a obsahují lokální změny. Nejdřív porovnejte diff; automatické přepsání je zablokované."
+        else:
+            recommendation = "Kopie se liší. Směr synchronizace potvrďte až po porovnání data, commitu a hashů."
+    remote_head = ""
+    if include_remote and (ROOT / ".git").exists():
+        result = subprocess.run(
+            ["git", "-c", f"safe.directory={ROOT.as_posix()}", "ls-remote", "origin", "HEAD"], cwd=ROOT,
+            capture_output=True, text=True, encoding="utf-8", timeout=30, check=False,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            remote_head = result.stdout.split()[0]
+    return {"state": state, "same": same, "local": local, "portable": external, "portable_root": portable, "github_head": remote_head, "recommendation": recommendation}
+
+
 def load_agents() -> dict[str, Any]:
     """Načte agenty a při prvním běhu založí výchozí lokální registr."""
-    if not AGENTS_PATH.exists() and DEFAULT_AGENTS_PATH.exists():
-        payload = load_document(DEFAULT_AGENTS_PATH, "agents")
-        save_document(AGENTS_PATH, payload)
-    current = load_document(AGENTS_PATH, "agents")
-    agents = current.get("agents", [])
-    if not isinstance(agents, list):
-        agents = []
-    current["agents"] = [agent for agent in agents if isinstance(agent, dict)]
-    by_id = {str(agent.get("id")): agent for agent in current["agents"]}
-    changed = False
-    for definition in BUILTIN_AGENTS:
-        existing = by_id.get(definition["id"])
-        if existing is None:
-            existing = {**definition, "status": "ready", "permission_mode": "confirm", "progress": 0, "current_step": "Připraven", "last_result": ""}
-            current["agents"].append(existing)
-            changed = True
-        else:
-            for key, value in definition.items():
-                if key not in existing or key in {"group", "dependencies", "tools"}:
-                    existing[key] = value
-                    changed = True
-    current.setdefault("active_agent_id", current["agents"][0].get("id", "raven") if current["agents"] else "")
-    if changed:
-        save_document(AGENTS_PATH, current)
-    return current
+    with AGENT_STATE_LOCK:
+        if not AGENTS_PATH.exists() and DEFAULT_AGENTS_PATH.exists():
+            payload = load_document(DEFAULT_AGENTS_PATH, "agents")
+            save_document(AGENTS_PATH, payload)
+        current = load_document(AGENTS_PATH, "agents")
+        agents = current.get("agents", [])
+        if not isinstance(agents, list):
+            agents = []
+        unique: list[dict[str, Any]] = []
+        by_id: dict[str, dict[str, Any]] = {}
+        changed = False
+        for raw_agent in agents:
+            if not isinstance(raw_agent, dict):
+                changed = True
+                continue
+            agent_id = str(raw_agent.get("id", "")).strip()
+            if not agent_id or agent_id in by_id:
+                changed = True
+                continue
+            by_id[agent_id] = raw_agent
+            unique.append(raw_agent)
+        current["agents"] = unique
+        for definition in BUILTIN_AGENTS:
+            existing = by_id.get(definition["id"])
+            if existing is None:
+                existing = {**definition, "status": "ready", "permission_mode": "confirm", "progress": 0, "current_step": "Připraven", "last_result": ""}
+                current["agents"].append(existing)
+                by_id[definition["id"]] = existing
+                changed = True
+            else:
+                for key, value in definition.items():
+                    if existing.get(key) != value and key in {"name", "role", "group", "dependencies", "tools", "model"}:
+                        existing[key] = value
+                        changed = True
+        current.setdefault("active_agent_id", current["agents"][0].get("id", "raven") if current["agents"] else "")
+        if changed:
+            save_document(AGENTS_PATH, current)
+        return current
 
 
 def sync_agent_event(event: dict[str, Any]) -> None:
@@ -1320,7 +1666,7 @@ def save_custom_agent(data: dict[str, Any]) -> dict[str, Any]:
         existing = {"id": agent_id, "created_at": datetime.now().isoformat(timespec="seconds")}
         current["agents"].append(existing)
     group = str(data.get("group", "Core"))
-    if group not in {"Core", "Planning", "Research", "Browser", "Coding", "Testing", "Files", "Memory", "Security", "System"}:
+    if group not in {"Core", "Planning", "Research", "Browser", "Coding", "Testing", "Files", "Memory", "Security", "Tools", "Quality", "Automation", "System", "Release", "Extensions"}:
         raise ValueError("Neplatná větev agenta.")
     permission = str(data.get("permission_mode", "confirm"))
     if permission not in {"full", "confirm", "denied"}:
@@ -1350,6 +1696,293 @@ def delete_agent(agent_id: str) -> dict[str, Any]:
         raise ValueError("Agent nebyl nalezen.")
     save_document(AGENTS_PATH, current)
     return current
+
+
+def specialized_agent_operation(agent: dict[str, Any], task: str) -> dict[str, Any]:
+    """Provede skutečnou čtecí kontrolu nebo modelovou práci podle role agenta."""
+    agent_id = str(agent.get("id", "raven"))
+    if agent_id == "diagnostics":
+        diagnostic = run_diagnostics(False)
+        return {"provider": "local-tool", "answer": json.dumps(diagnostic, ensure_ascii=False, indent=2), "kind": "diagnostic"}
+    if agent_id in {"telemetry", "process"}:
+        status = hardware_status()
+        summary = {
+            "system_usage": status.get("system_usage", {}),
+            "disks": status.get("disks", []),
+            "process_count": len(status.get("processes", [])),
+            "temperatures": status.get("temperatures", []),
+        }
+        return {"provider": "local-tool", "answer": json.dumps(summary, ensure_ascii=False, indent=2), "kind": "telemetry"}
+    if agent_id == "project-indexer":
+        result = rebuild_project_index(str(ROOT))
+        return {"provider": "local-tool", "answer": json.dumps(result, ensure_ascii=False, indent=2), "kind": "project-index"}
+    if agent_id == "git":
+        result = subprocess.run(
+            ["git", "-c", f"safe.directory={ROOT.as_posix()}", "status", "--short", "--branch"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=20,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise ValueError((result.stderr or "Git kontrola selhala.").strip())
+        return {"provider": "local-tool", "answer": result.stdout.strip() or "Pracovní kopie je čistá.", "kind": "git-status"}
+
+    instructions = str(agent.get("instructions", "")).strip()
+    role = str(agent.get("role", "Specializovaný pomocník")).strip()
+    system = (
+        f"Jsi specializovaný agent {agent.get('name', agent_id)} uvnitř Ravenu. Tvoje role: {role}. "
+        "Vyřeš pouze přidělenou analytickou část a vrať stručný, konkrétní výsledek hlavnímu Ravenovi. "
+        "Nevymýšlej provedené nástroje, změny souborů ani testy. Pokud chybí důkaz nebo nástroj, výslovně to označ. "
+        "Nepoužívej placené služby, Grok ani xAI."
+    )
+    if instructions:
+        system += "\nDalší pravidla agenta:\n" + instructions[:3000]
+    provider, answer, fallbacks = automatic_provider_request(
+        [{"role": "system", "content": system}, {"role": "user", "content": task[:6000]}],
+        intent=classify_intent(task),
+    )
+    if not answer.strip():
+        raise ValueError("Specializovaný agent nevrátil žádný výsledek.")
+    return {"provider": provider, "answer": answer, "fallbacks": fallbacks, "kind": "model-response"}
+
+
+def finish_agent_job(task_id: str, agent_id: str, result: dict[str, Any] | None, error: str = "") -> None:
+    """Atomicky uloží výsledek jednoho specializovaného agenta."""
+    with AGENT_STATE_LOCK:
+        current = load_agents()
+        agent = agent_by_id(current["agents"], agent_id)
+        agent["status"] = "error" if error else "ready"
+        agent["progress"] = 0 if error else 100
+        agent["current_step"] = "Chyba" if error else "Připraven"
+        agent["last_result"] = (error or str((result or {}).get("answer", "")))[:1000]
+        if agent.get("current_task"):
+            agent["last_task"] = str(agent["current_task"])[:2000]
+        agent.pop("current_task", None)
+        agent["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        for task_entry in current.get("tasks", []):
+            if task_entry.get("id") != task_id:
+                continue
+            task_entry.setdefault("results", {})[agent_id] = {
+                "status": "error" if error else "completed",
+                "provider": str((result or {}).get("provider", "")),
+                "kind": str((result or {}).get("kind", "")),
+                "answer": str((result or {}).get("answer", ""))[:12000],
+                "error": error[:1000],
+                "completed_at": datetime.now().isoformat(timespec="seconds"),
+            }
+            completed = task_entry.setdefault("completed_agents", [])
+            if agent_id not in completed:
+                completed.append(agent_id)
+            if set(completed) >= set(task_entry.get("agents", [])):
+                task_entry["status"] = "failed" if any(
+                    item.get("status") == "error" for item in task_entry.get("results", {}).values()
+                ) else "completed"
+                task_entry["completed_at"] = datetime.now().isoformat(timespec="seconds")
+            break
+        save_document(AGENTS_PATH, current)
+
+
+def execute_agent_job(task_id: str, agent_id: str, task: str) -> None:
+    """Běhová funkce fronty agentů; každý výsledek je uložen a viditelný v HUDu."""
+    try:
+        emit_event("execute", "working", agent=agent_id, task_id=task_id, result="Specializovaný agent pracuje")
+        agent = agent_by_id(load_agents()["agents"], agent_id)
+        result = run_agent_stage(
+            agent_id,
+            task,
+            lambda: specialized_agent_operation(agent, task),
+            requires_permission=False,
+        )
+        finish_agent_job(task_id, agent_id, result)
+        emit_event("done", "completed", agent=agent_id, task_id=task_id, model=str(result.get("provider", "")), result="Specializovaný úkol dokončen")
+    except Exception as error:
+        logging.exception("Specializovaný agent %s selhal", agent_id)
+        finish_agent_job(task_id, agent_id, None, str(error))
+        emit_event("error", "error", agent=agent_id, task_id=task_id, error=str(error)[:500], result="Specializovaný úkol selhal")
+
+
+def dispatch_agent_job(task: str, agent_ids: list[str]) -> dict[str, Any]:
+    """Zařadí nejvýše šest připravených agentů do skutečné limitované fronty."""
+    clean_task = str(task or "").strip()
+    if not 1 <= len(clean_task) <= 2000:
+        raise ValueError("Úkol pro agenty musí mít 1 až 2000 znaků.")
+    if not 1 <= len(agent_ids) <= 6:
+        raise ValueError("Vyberte 1 až 6 agentů.")
+    with AGENT_STATE_LOCK:
+        current = load_agents()
+        selected = [agent_by_id(current["agents"], normalize_agent_id(value)) for value in agent_ids]
+        ready = [agent for agent in selected if agent.get("status") == "ready"]
+        if not ready:
+            raise ValueError("Žádný vybraný agent není připraven.")
+        task_id = f"task-{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+        task_entry = {
+            "id": task_id,
+            "task": clean_task,
+            "agents": [str(agent["id"]) for agent in ready],
+            "status": "running",
+            "results": {},
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        for agent in ready:
+            agent["status"] = "working"
+            agent["progress"] = 5
+            agent["current_step"] = "Ve frontě"
+            agent["current_task"] = clean_task
+        current["tasks"] = (current.get("tasks", []) + [task_entry])[-50:]
+        save_document(AGENTS_PATH, current)
+    for agent in ready:
+        AGENT_JOB_POOL.submit(execute_agent_job, task_id, str(agent["id"]), clean_task)
+    return {"task_id": task_id, "agents": ready, "task": task_entry}
+
+
+def schedule_definition(value: object, now: datetime | None = None) -> dict[str, Any]:
+    """Převede ISO datum, denní HH:MM nebo interval na jednoznačný další běh."""
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError("Zadejte čas jako datum a čas, HH:MM nebo například ‚každých 30 minut‘.")
+    current = now or datetime.now().astimezone()
+    plain = "".join(character for character in unicodedata.normalize("NFKD", text) if not unicodedata.combining(character)).lower()
+    interval = re.fullmatch(r"(?:kazdych|kazde|every)\s+(\d{1,5})\s*(minut(?:y)?|minutes?|hodin(?:y)?|hours?)", plain)
+    if interval:
+        amount = int(interval.group(1))
+        unit = interval.group(2)
+        seconds = amount * (3600 if unit.startswith(("hod", "hour")) else 60)
+        if not 60 <= seconds <= 31 * 24 * 3600:
+            raise ValueError("Interval musí být od 1 minuty do 31 dnů.")
+        return {"mode": "interval", "cadence_seconds": seconds, "next_run": (current + timedelta(seconds=seconds)).isoformat(timespec="seconds")}
+    daily = re.fullmatch(r"(?:(?:denne|daily)\s+)?([01]?\d|2[0-3]):([0-5]\d)", plain)
+    if daily:
+        hour, minute = int(daily.group(1)), int(daily.group(2))
+        candidate = current.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if candidate <= current:
+            candidate += timedelta(days=1)
+        return {"mode": "daily", "daily_time": f"{hour:02d}:{minute:02d}", "next_run": candidate.isoformat(timespec="seconds")}
+    try:
+        candidate = datetime.fromisoformat(text)
+    except ValueError as error:
+        raise ValueError("Čas není rozpoznán. Použijte ISO datum, HH:MM nebo ‚každých 30 minut‘.") from error
+    if candidate.tzinfo is None:
+        candidate = candidate.replace(tzinfo=current.tzinfo)
+    if candidate <= current:
+        raise ValueError("Jednorázový čas musí být v budoucnosti.")
+    return {"mode": "once", "next_run": candidate.isoformat(timespec="seconds")}
+
+
+def create_scheduled_chat(schedule: dict[str, Any]) -> tuple[str, list[dict[str, str]]]:
+    """Vytvoří samostatný chat plánovače bez přepnutí právě otevřeného chatu."""
+    chat_id = uuid4().hex
+    prompt = str(schedule.get("prompt", "")).strip()
+    now = datetime.now().isoformat(timespec="seconds")
+    messages = [{"role": "user", "content": prompt, "created_at": now}]
+    with CHAT_LOCK:
+        payload = load_chats()
+        active = str(payload.get("active_chat_id", ""))
+        payload["chats"].append({
+            "id": chat_id,
+            "title": f"Plán: {str(schedule.get('title', 'Úkol'))[:100]}",
+            "messages": messages,
+            "created_at": now,
+            "updated_at": now,
+            "project": "scheduler",
+        })
+        payload["chats"] = payload["chats"][-100:]
+        payload["active_chat_id"] = active
+        save_document(CHATS_PATH, payload)
+    return chat_id, messages
+
+
+def advance_schedule(item: dict[str, Any], completed_at: datetime) -> None:
+    mode = str(item.get("mode", "once"))
+    if mode == "interval":
+        seconds = max(60, int(item.get("cadence_seconds", 60)))
+        item["next_run"] = (completed_at + timedelta(seconds=seconds)).isoformat(timespec="seconds")
+    elif mode == "daily":
+        hour, minute = (int(part) for part in str(item.get("daily_time", "00:00")).split(":", 1))
+        candidate = completed_at.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if candidate <= completed_at:
+            candidate += timedelta(days=1)
+        item["next_run"] = candidate.isoformat(timespec="seconds")
+    else:
+        item["enabled"] = False
+        item["next_run"] = ""
+
+
+def execute_scheduled_task(schedule_id: str) -> None:
+    """Spustí naplánovaný úkol přes stejné lokální API a stejná oprávnění jako HUD."""
+    with SCHEDULE_STATE_LOCK:
+        payload = load_document(SCHEDULES_PATH, "schedules")
+        item = next((row for row in payload.get("schedules", []) if row.get("id") == schedule_id), None)
+        if not isinstance(item, dict) or item.get("enabled") is not True or item.get("status") == "running":
+            return
+        item["status"] = "running"
+        item["last_started"] = datetime.now().astimezone().isoformat(timespec="seconds")
+        save_document(SCHEDULES_PATH, payload)
+        schedule = dict(item)
+    try:
+        chat_id, messages = create_scheduled_chat(schedule)
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{CONTROL_PORT}/chat",
+            data=json.dumps({"chat_id": chat_id, "messages": messages, "model": "automatic"}, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=330) as response:
+            result = json.loads(response.read().decode("utf-8"))
+        answer = str(result.get("answer", ""))
+        if not answer:
+            raise ValueError(str(result.get("error", "Naplánovaný úkol nevrátil výsledek.")))
+        error = ""
+    except urllib.error.HTTPError as http_error:
+        try:
+            detail = json.loads(http_error.read().decode("utf-8"))
+            error = str(detail.get("error") or detail.get("message") or http_error.reason)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            error = str(http_error.reason)
+        answer = ""
+    except (OSError, ValueError, json.JSONDecodeError) as execution_error:
+        error = str(execution_error)
+        answer = ""
+    completed_at = datetime.now().astimezone()
+    with SCHEDULE_STATE_LOCK:
+        payload = load_document(SCHEDULES_PATH, "schedules")
+        item = next((row for row in payload.get("schedules", []) if row.get("id") == schedule_id), None)
+        if not isinstance(item, dict):
+            return
+        item["status"] = "error" if error else "completed"
+        item["last_error"] = error[:1000]
+        item["last_result"] = answer[:2000]
+        item["last_completed"] = completed_at.isoformat(timespec="seconds")
+        item["run_count"] = int(item.get("run_count", 0)) + 1
+        advance_schedule(item, completed_at)
+        save_document(SCHEDULES_PATH, payload)
+    emit_event("done" if not error else "error", "completed" if not error else "error", agent="scheduler", result="Naplánovaný úkol dokončen" if not error else "Naplánovaný úkol selhal", error=error[:500] or None)
+
+
+def scheduler_loop() -> None:
+    """Kontroluje splatné položky; jednu položku nikdy nespustí dvakrát současně."""
+    while True:
+        now = datetime.now().astimezone()
+        due: list[str] = []
+        with SCHEDULE_STATE_LOCK:
+            payload = load_document(SCHEDULES_PATH, "schedules")
+            for item in payload.get("schedules", []):
+                if not isinstance(item, dict) or item.get("enabled") is not True or item.get("status") == "running":
+                    continue
+                try:
+                    next_run = datetime.fromisoformat(str(item.get("next_run", "")))
+                    if next_run.tzinfo is None:
+                        next_run = next_run.replace(tzinfo=now.tzinfo)
+                except ValueError:
+                    continue
+                if next_run <= now:
+                    due.append(str(item.get("id", "")))
+        for schedule_id in due:
+            if schedule_id:
+                threading.Thread(target=execute_scheduled_task, args=(schedule_id,), name=f"raven-schedule-{schedule_id[:8]}", daemon=True).start()
+        time.sleep(15)
 
 
 def run_startup_command(
@@ -1589,6 +2222,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(search_library(str(query.get("q", [""])[0])))
         elif request_path == "/diagnostics":
             self.send_json(run_diagnostics(str(query.get("full", ["0"])[0]) == "1"))
+        elif request_path == "/sync/status":
+            self.send_json(sync_status(str(query.get("remote", ["0"])[0]) == "1"))
         elif request_path == "/rules":
             self.send_json({"rules": load_rules()})
         elif request_path == "/settings":
@@ -1706,13 +2341,17 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/settings":
                 allowed = {
                     "default_model", "internet_mode", "router_mode", "permission_mode",
-                    "project_start_required", "start_with_windows", "borderless_window", "powershell_uac", "ai_provider", "simulation_mode",
+                    "project_start_required", "start_with_windows", "borderless_window", "powershell_uac", "ai_provider", "simulation_mode", "ui_zoom_percent",
                 }
                 current = load_settings()
                 for key, value in data.items():
                     if key in allowed:
                         current[key] = value
                 current["ai_provider"] = normalize_provider(current.get("ai_provider", "local"))
+                try:
+                    current["ui_zoom_percent"] = max(75, min(150, int(current.get("ui_zoom_percent", 100))))
+                except (TypeError, ValueError):
+                    raise ValueError("Měřítko rozhraní musí být celé číslo od 75 do 150 procent.")
                 current["cloud_api"] = current["ai_provider"] != "local"
                 if "start_with_windows" in data:
                     if not isinstance(data["start_with_windows"], bool):
@@ -1744,13 +2383,33 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if self.path == "/providers/key":
                 provider = normalize_provider(data.get("provider"))
-                if provider == "local":
-                    raise ValueError("Lokální režim API klíč nepoužívá.")
+                if provider in {"local", "automatic", "codex_plus"}:
+                    raise ValueError("Zvolený režim API klíč nepoužívá.")
+                if provider == "cloudflare_free":
+                    save_cloudflare_account_id(data.get("account_id"))
                 api_key = validate_cloud_secret(data.get("api_key"))
                 if data.get("test") is True:
                     provider_request(provider, [{"role": "user", "content": "Odpověz pouze OK."}], api_key=api_key)
                 save_cloud_secret(provider, api_key)
                 self.send_json(provider_status())
+                return
+            if self.path == "/providers/test-all":
+                results: list[dict[str, Any]] = []
+                for provider_id in load_cloud_secrets():
+                    if provider_id in {"local", "automatic", "codex_plus"}:
+                        continue
+                    started_at = datetime.now()
+                    try:
+                        provider_request(provider_id, [{"role": "user", "content": "Odpověz pouze OK."}])
+                        record_provider_health(provider_id, True, started_at)
+                        results.append({"provider": provider_id, "status": "ok", "detail": "Funkční"})
+                    except (ProviderQuotaError, ProviderTransientError, ValueError) as error:
+                        record_provider_health(provider_id, False, started_at)
+                        results.append({"provider": provider_id, "status": "error", "detail": str(error)[:180]})
+                self.send_json({"results": results, **provider_status()})
+                return
+            if self.path == "/providers/codex-login":
+                self.send_json(start_codex_login())
                 return
             if self.path == "/chat":
                 settings = load_settings()
@@ -1867,7 +2526,7 @@ class Handler(BaseHTTPRequestHandler):
                     include_library = provider == "local" or library_settings.get("online_context") is True
                     messages = prepare_chat_messages(raw_messages, include_library=include_library)
                     brain_event("context", "completed", agent="project-indexer", result="Paměť a relevantní soubory připojeny")
-                    brain_event("execute", agent="raven", tool="model-router", result="Čekám na vhodný bezplatný model")
+                    brain_event("execute", agent="raven", tool="model-router", result="Čekám na vhodný povolený model")
                     operation = (
                         lambda: automatic_provider_request(messages, str(data.get("model", "")), brain_task.intent)
                         if provider == "automatic"
@@ -1883,11 +2542,46 @@ class Handler(BaseHTTPRequestHandler):
                     ))
                     BRAIN.mark_next_for_agent(brain_task_id, "raven", "completed", f"Odpověď přes {selected_provider}")
                 record_active_provider(selected_provider)
+                pre_review = run_agent_stage(
+                    "reviewer", prompt, lambda: BRAIN.review(brain_task_id, answer), requires_permission=False,
+                )
+                if not pre_review.accepted and not local_action and brain_task.intent != TaskIntent.RESEARCH:
+                    for repair_attempt in range(2):
+                        brain_event(
+                            "review", "working", agent="reviewer", tool="repair-loop",
+                            result=f"Opravuji výsledek po kontrole · pokus {repair_attempt + 1}/2",
+                        )
+                        correction = (
+                            "Nezávislá kontrola odmítla předchozí odpověď z těchto důvodů:\n- "
+                            + "\n- ".join(pre_review.errors)
+                            + "\nVrať opravenou odpověď. Neuváděj provedení žádné akce bez důkazu a nevymýšlej si stav nástrojů."
+                        )
+                        repair_messages = [
+                            *messages,
+                            {"role": "assistant", "content": answer},
+                            {"role": "user", "content": correction},
+                        ]
+                        operation = (
+                            lambda: automatic_provider_request(repair_messages, str(data.get("model", "")), brain_task.intent)
+                            if provider == "automatic"
+                            else (provider, provider_request(provider, repair_messages, str(data.get("model", ""))), [])
+                        )
+                        selected_provider, answer, repair_fallbacks = run_agent_stage(
+                            "raven", correction, operation, requires_permission=False,
+                        )
+                        fallbacks.extend(repair_fallbacks)
+                        BRAIN.add_evidence(brain_task_id, ExecutionEvidence(
+                            kind="model_response",
+                            source=selected_provider,
+                            summary=f"Model vrátil opravenou odpověď po kontrole {repair_attempt + 1}.",
+                            verified=bool(answer.strip()),
+                            details={"characters": len(answer), "repair_attempt": repair_attempt + 1},
+                        ))
+                        pre_review = BRAIN.review(brain_task_id, answer)
+                        if pre_review.accepted:
+                            break
                 completed_task, review = run_agent_stage(
-                    "reviewer",
-                    prompt,
-                    lambda: BRAIN.complete(brain_task_id, answer),
-                    requires_permission=False,
+                    "reviewer", prompt, lambda: BRAIN.complete(brain_task_id, answer), requires_permission=False,
                 )
                 if not review.accepted:
                     raise ValueError("Kontrola výsledku odmítla odpověď: " + "; ".join(review.errors))
@@ -1920,6 +2614,15 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/project-index/rebuild":
                 require_permission(data, "vytvoření lokálního indexu projektu")
                 self.send_json(rebuild_project_index(str(data.get("root", ""))))
+                return
+            if self.path == "/sync/settings":
+                portable_root = Path(str(data.get("portable_root", "")).strip()).expanduser().resolve()
+                if not portable_root.is_dir():
+                    raise ValueError("Přenosná projektová složka neexistuje.")
+                if portable_root == ROOT:
+                    raise ValueError("Přenosná kopie musí být jiná složka než místní projekt.")
+                save_document(SYNC_SETTINGS_PATH, {"portable_root": str(portable_root)})
+                self.send_json(sync_status(False))
                 return
             if self.path == "/chats/save":
                 self.send_json(save_chat(data))
@@ -1956,20 +2659,36 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(delete_agent(normalize_agent_id(data.get("id"))))
                 return
             if self.path == "/schedules/save":
-                payload = load_document(SCHEDULES_PATH, "schedules")
-                schedules = payload.get("schedules", []) if isinstance(payload.get("schedules", []), list) else []
-                schedule_id = str(data.get("id") or uuid4().hex)
-                item = next((row for row in schedules if row.get("id") == schedule_id), None)
-                if item is None:
-                    item = {"id": schedule_id, "created_at": datetime.now().isoformat(timespec="seconds")}
-                    schedules.append(item)
                 title = str(data.get("title", "")).strip()
+                prompt = str(data.get("prompt", "")).strip()
                 if not title:
                     raise ValueError("Naplánovaný úkol musí mít název.")
-                item.update({"title": title[:120], "prompt": str(data.get("prompt", ""))[:3000], "when": str(data.get("when", ""))[:120], "enabled": data.get("enabled", True) is True})
-                payload["schedules"] = schedules[-100:]
-                save_document(SCHEDULES_PATH, payload)
+                if not prompt:
+                    raise ValueError("Naplánovaný úkol musí obsahovat zadání pro Raven.")
+                timing = schedule_definition(data.get("when"))
+                with SCHEDULE_STATE_LOCK:
+                    payload = load_document(SCHEDULES_PATH, "schedules")
+                    schedules = payload.get("schedules", []) if isinstance(payload.get("schedules", []), list) else []
+                    schedule_id = str(data.get("id") or uuid4().hex)
+                    item = next((row for row in schedules if row.get("id") == schedule_id), None)
+                    if item is None:
+                        item = {"id": schedule_id, "created_at": datetime.now().isoformat(timespec="seconds"), "run_count": 0}
+                        schedules.append(item)
+                    item.update({
+                        "title": title[:120], "prompt": prompt[:3000], "when": str(data.get("when", ""))[:120],
+                        "enabled": data.get("enabled", True) is True, "status": "scheduled", "last_error": "", **timing,
+                    })
+                    payload["schedules"] = schedules[-100:]
+                    save_document(SCHEDULES_PATH, payload)
                 self.send_json(payload)
+                return
+            if self.path == "/schedules/run":
+                schedule_id = str(data.get("id", "")).strip()
+                if not schedule_id:
+                    raise ValueError("Naplánovaný úkol nebyl určen.")
+                require_permission(data, "ruční spuštění naplánovaného úkolu")
+                threading.Thread(target=execute_scheduled_task, args=(schedule_id,), name=f"raven-schedule-manual-{schedule_id[:8]}", daemon=True).start()
+                self.send_json({"started": True, "id": schedule_id})
                 return
             if self.path == "/schedules/delete":
                 require_permission(data, "smazání naplánovaného úkolu")
@@ -2011,12 +2730,20 @@ class Handler(BaseHTTPRequestHandler):
                 agent = agent_by_id(current["agents"], agent_id)
                 if agent_id == "raven" and action in {"stop", "pause"}:
                     raise ValueError("Centrální Raven musí zůstat aktivní.")
-                agent["status"] = {"start": "working", "retry": "working", "pause": "paused", "stop": "ready"}[action]
-                agent["current_step"] = {"start": "Spuštěn", "retry": "Opakuji", "pause": "Pozastaven", "stop": "Zastaven"}[action]
-                agent["progress"] = 10 if action in {"start", "retry"} else 0
+                if action in {"start", "retry"}:
+                    previous_task = str(agent.get("current_task") or agent.get("last_task") or "").strip()
+                    requested_task = str(data.get("task", "")).strip()
+                    task = requested_task or previous_task or f"Ověř připravenost agenta {agent.get('name', agent_id)} a stručně popiš dostupné schopnosti."
+                    if agent.get("status") == "working":
+                        raise ValueError("Agent již na úkolu pracuje.")
+                    self.send_json(dispatch_agent_job(task, [agent_id]))
+                    return
+                agent["status"] = "paused" if action == "pause" else "ready"
+                agent["current_step"] = "Pozastaven" if action == "pause" else "Zastaven"
+                agent["progress"] = 0
                 agent["updated_at"] = datetime.now().isoformat(timespec="seconds")
                 save_document(AGENTS_PATH, current)
-                emit_event("execute", "working" if action in {"start", "retry"} else "paused", agent=agent_id, result=agent["current_step"])
+                emit_event("execute", "paused", agent=agent_id, result=agent["current_step"])
                 self.send_json(current)
                 return
             if self.path == "/agents/install":
@@ -2056,30 +2783,11 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/agents/tasks":
                 task = str(data.get("task", "")).strip()
                 agent_ids = data.get("agent_ids", [])
-                if not task or len(task) > 2000:
-                    raise ValueError("Úkol pro agenty musí mít 1 až 2000 znaků.")
-                if not isinstance(agent_ids, list) or not 1 <= len(agent_ids) <= 6:
+                if not isinstance(agent_ids, list):
                     raise ValueError("Vyberte 1 až 6 agentů.")
-                current = load_agents()
-                selected = [agent_by_id(current["agents"], normalize_agent_id(value)) for value in agent_ids]
-                ready = [agent for agent in selected if agent.get("status") == "ready"]
-                if not ready:
-                    raise ValueError("Žádný vybraný agent není připraven.")
-                task_id = f"task-{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
-                task_entry = {
-                    "id": task_id,
-                    "task": task,
-                    "agents": [agent["id"] for agent in ready],
-                    "status": "running",
-                    "created_at": datetime.now().isoformat(timespec="seconds"),
-                }
-                for agent in ready:
-                    agent["status"] = "working"
-                    agent["current_task"] = task
-                current["tasks"] = (current.get("tasks", []) + [task_entry])[-30:]
-                save_document(AGENTS_PATH, current)
-                logging.info("Spuštěn souběžný úkol %s pro %s agenty", task_id, len(ready))
-                self.send_json({"task_id": task_id, "agents": ready})
+                result = dispatch_agent_job(task, [str(value) for value in agent_ids])
+                logging.info("Spuštěn skutečný úkol %s pro %s agentů", result["task_id"], len(result["agents"]))
+                self.send_json(result)
                 return
             if self.path == "/agents/openclaw/run":
                 task = str(data.get("task", "")).strip()
@@ -2157,4 +2865,5 @@ if __name__ == "__main__":
             logging.exception("Rychla diagnostika po startu selhala")
 
     threading.Thread(target=startup_diagnostic, name="raven-startup-diagnostic", daemon=True).start()
+    threading.Thread(target=scheduler_loop, name="raven-scheduler", daemon=True).start()
     server.serve_forever()

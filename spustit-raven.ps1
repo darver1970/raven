@@ -1,9 +1,17 @@
 # Spouští všechny lokální služby aplikace Raven z instalační složky a otevře její rozhraní.
+[CmdletBinding()]
+param(
+    [switch]$NoDesktop
+)
+
 $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
 $logDirectory = Join-Path $root 'runtime\logs'
 New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
 $launcherLog = Join-Path $logDirectory 'launcher.log'
+$stateDirectory = Join-Path $root 'runtime\state'
+New-Item -ItemType Directory -Path $stateDirectory -Force | Out-Null
+$ollamaProcessMarker = Join-Path $stateDirectory 'ollama-process.json'
 $launcherMutex = [Threading.Mutex]::new($false, 'Local\RavenLauncherV1')
 if (-not $launcherMutex.WaitOne(30000)) { throw 'Jiné spuštění aplikace Raven stále probíhá.' }
 
@@ -29,6 +37,54 @@ function Test-RavenPort([int]$Port, [string]$ExpectedCommand) {
     }
     $processName = if ($process) { $process.Name } else { "PID $($listener.OwningProcess)" }
     throw "Port $Port používá jiný proces ($processName). Raven jej z bezpečnostních důvodů neukončil."
+}
+
+function Get-OwnedOllamaProcess {
+    if (-not (Test-Path -LiteralPath $ollamaProcessMarker -PathType Leaf)) { return $null }
+    try {
+        $marker = Get-Content -LiteralPath $ollamaProcessMarker -Raw -Encoding utf8 | ConvertFrom-Json
+        $markerRoot = [System.IO.Path]::GetFullPath([string]$marker.raven_root).TrimEnd('\')
+        $markerExecutable = [System.IO.Path]::GetFullPath([string]$marker.executable)
+        $markerPid = [int]$marker.pid
+        if (
+            $markerPid -le 0 -or
+            -not $markerRoot.Equals($root.TrimEnd('\'), [System.StringComparison]::OrdinalIgnoreCase)
+        ) {
+            return $null
+        }
+        $process = Get-CimInstance Win32_Process -Filter "ProcessId = $markerPid" -ErrorAction SilentlyContinue
+        if (-not $process -or $process.Name -ne 'ollama.exe') { return $null }
+        $processExecutable = [System.IO.Path]::GetFullPath([string]$process.ExecutablePath)
+        if (-not $processExecutable.Equals($markerExecutable, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $null
+        }
+        $recordedStart = [DateTime]::Parse(
+            [string]$marker.started_at_utc,
+            [Globalization.CultureInfo]::InvariantCulture,
+            [Globalization.DateTimeStyles]::RoundtripKind
+        ).ToUniversalTime()
+        $actualStart = ([DateTime]$process.CreationDate).ToUniversalTime()
+        if ([Math]::Abs(($actualStart - $recordedStart).TotalSeconds) -gt 10) { return $null }
+        return $process
+    } catch {
+        return $null
+    }
+}
+
+function Test-RavenOllamaPort {
+    $listener = Get-NetTCPConnection -LocalPort 11434 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $listener) { return $false }
+    $process = Get-CimInstance Win32_Process -Filter "ProcessId = $($listener.OwningProcess)" -ErrorAction SilentlyContinue
+    $ownedProcess = Get-OwnedOllamaProcess
+    $insideRoot = $process -and $process.ExecutablePath -and [System.IO.Path]::GetFullPath([string]$process.ExecutablePath).StartsWith(
+        "$($root.TrimEnd('\'))\",
+        [System.StringComparison]::OrdinalIgnoreCase
+    )
+    if ($insideRoot -or ($ownedProcess -and $ownedProcess.ProcessId -eq $listener.OwningProcess)) {
+        return $true
+    }
+    $processName = if ($process) { $process.Name } else { "PID $($listener.OwningProcess)" }
+    throw "Port 11434 používá jiný proces ($processName). Raven jej z bezpečnostních důvodů nepoužil ani neukončil."
 }
 
 function Wait-RavenHttp([string]$Uri, [int]$Seconds) {
@@ -67,10 +123,17 @@ if (-not (Test-Path -LiteralPath $ollamaPath)) {
     if (-not $ollamaCommand) { throw "Ollama nebyla nalezena. Nejdříve spusťte install.ps1." }
     $ollamaPath = $ollamaCommand.Source
 }
-if (-not (Test-Port 11434)) {
-    Start-Process -FilePath $ollamaPath -ArgumentList "serve" -WorkingDirectory $root -WindowStyle Hidden
-    for ($attempt = 0; $attempt -lt 40 -and -not (Test-Port 11434); $attempt++) { Start-Sleep -Milliseconds 250 }
-    if (-not (Test-Port 11434)) { throw 'Lokální služba Ollama se nespustila na portu 11434.' }
+if (-not (Test-RavenOllamaPort)) {
+    $ollamaProcess = Start-Process -FilePath $ollamaPath -ArgumentList "serve" -WorkingDirectory $root -WindowStyle Hidden -PassThru
+    [ordered]@{
+        raven_root = $root
+        pid = $ollamaProcess.Id
+        executable = [System.IO.Path]::GetFullPath($ollamaPath)
+        started_at_utc = $ollamaProcess.StartTime.ToUniversalTime().ToString('o')
+        port = 11434
+    } | ConvertTo-Json | Set-Content -LiteralPath $ollamaProcessMarker -Encoding utf8
+    for ($attempt = 0; $attempt -lt 40 -and -not (Test-RavenOllamaPort); $attempt++) { Start-Sleep -Milliseconds 250 }
+    if (-not (Test-RavenOllamaPort)) { throw 'Lokální služba Ollama se nespustila na portu 11434.' }
 }
 Wait-RavenHttp -Uri 'http://127.0.0.1:11434/api/version' -Seconds 10
 if (-not (Test-RavenPort -Port 8000 -ExpectedCommand 'jarvis')) {
@@ -147,15 +210,26 @@ if (-not $networkProcess) {
 }
 
 # Nový Electron shell obsahuje skutečný prohlížeč WebContentsView, Monaco a pracovní karty.
-$desktopApp = "$root\desktop\Raven-Desktop.exe"
-if (Test-Path -LiteralPath $desktopApp) {
-    Start-Process -FilePath $desktopApp -WorkingDirectory "$root\desktop"
-} else {
-    $electron = "$root\desktop-electron\node_modules\electron\dist\electron.exe"
-    if (-not (Test-Path -LiteralPath $electron)) {
-        throw "Desktopová vrstva Raven nebyla nalezena. Spusťte install.ps1."
+if (-not $NoDesktop) {
+    $installedShell = "$root\Raven.exe"
+    $desktopApp = "$root\desktop\Raven-Desktop.exe"
+    $useDevelopmentShell = $env:RAVEN_DESKTOP_DEV -eq '1'
+    if ((Test-Path -LiteralPath $installedShell) -and -not $useDevelopmentShell) {
+        Start-Process -FilePath $installedShell -WorkingDirectory $root
+    } elseif ((Test-Path -LiteralPath $desktopApp) -and -not $useDevelopmentShell) {
+        Start-Process -FilePath $desktopApp -WorkingDirectory "$root\desktop"
+    } else {
+        $electron = "$root\desktop-electron\node_modules\electron\dist\electron.exe"
+        if (-not (Test-Path -LiteralPath $electron)) {
+            throw "Desktopová vrstva Raven nebyla nalezena. Spusťte install.ps1."
+        }
+        $electronArguments = @()
+        if ($env:RAVEN_DEBUG_PORT -match '^\d{2,5}$') {
+            $electronArguments += "--remote-debugging-port=$($env:RAVEN_DEBUG_PORT)"
+        }
+        $electronArguments += '.'
+        Start-Process -FilePath $electron -ArgumentList $electronArguments -WorkingDirectory "$root\desktop-electron"
     }
-    Start-Process -FilePath $electron -ArgumentList '.' -WorkingDirectory "$root\desktop-electron"
 }
     Add-Content -LiteralPath $launcherLog -Value "$(Get-Date -Format o) Raven launcher success" -Encoding utf8
 } catch {

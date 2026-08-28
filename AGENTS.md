@@ -22,7 +22,7 @@ Tento soubor platí pro každou kopii projektu Raven 1.0 bez ohledu na písmeno 
 ## Cena, služby a bezpečnost
 
 1. Používej pouze bezplatné a open-source komponenty nebo bezplatné kvóty výslovně nakonfigurované uživatelem.
-2. Nikdy neaktivuj placenou službu, nákup, předplatné ani placený model.
+2. Automatické směrování používá pouze bezplatné kvóty a lokální modely. Codex lze spustit jen ručně, pokud k němu má uživatel již vlastní přístup; nikdy jej nepoužívej automaticky, nekupuj kredity a neaktivuj službu, nákup, předplatné ani placený model.
 3. Grok a xAI jsou zakázané.
 4. API klíče, hesla, tokeny a obsah `runtime` nikdy nezapisuj do repozitáře, dokumentace, testovacích výpisů ani předávacího logu.
 5. Režimy oprávnění Raven jsou `Plný přístup`, `Na potvrzení` a `Zakázáno`. Nevratné nebo systémové operace vyžadují přesné potvrzení i při plném přístupu.

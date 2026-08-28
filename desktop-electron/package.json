@@ -4,6 +4,7 @@
   "private": true,
   "description": "Bezplatne lokalni desktopove rozhrani Raven 1.0",
   "author": "Raven contributors",
+  "repository": "https://github.com/darver1970/raven",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
@@ -12,33 +13,72 @@
     "pack:installer": "electron-builder --win nsis -c.artifactName=Raven-1.0-Setup.exe"
   },
   "dependencies": {
+    "electron-updater": "^6.8.9",
     "monaco-editor": "^0.52.2"
   },
   "devDependencies": {
-    "electron": "^37.2.6",
+    "electron": "^44.0.0",
     "electron-builder": "^26.0.12"
   },
   "build": {
     "appId": "cz.raven.desktop",
     "productName": "Raven 1.0",
     "asar": true,
-    "directories": { "output": "../desktop-dist" },
-    "files": ["main.js", "preload.js", "package.json", "node_modules/monaco-editor/**/*"],
+    "directories": {
+      "output": "../desktop-dist"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "darver1970",
+        "repo": "raven",
+        "releaseType": "release"
+      }
+    ],
+    "files": [
+      "main.js",
+      "preload.js",
+      "package.json",
+      "node_modules/monaco-editor/**/*"
+    ],
     "extraResources": [
       {
         "from": "..",
         "to": "raven-project",
         "filter": [
-          ".gitignore", "AGENTS.md", "LICENSE", "NOTICE", "README.md", "RELEASE_NOTES.md", "VERSION",
-          "*.py", "*.ps1", "defaults/**/*", "hud/**/*", "desktop/raven.ico", "desktop/raven-logo.png",
-          "desktop-electron/main.js", "desktop-electron/preload.js",
-          "desktop-electron/package.json", "desktop-electron/package-lock.json",
-          "!hud/hardware-status.json", "!hud/network-status.json", "!hud/voice-event.json",
-          "!**/__pycache__/**", "!**/*.pyc"
+          ".gitignore",
+          "AGENTS.md",
+          "LICENSE",
+          "NOTICE",
+          "README.md",
+          "RELEASE_NOTES.md",
+          "VERSION",
+          "*.py",
+          "*.ps1",
+          "defaults/**/*",
+          "hud/**/*",
+          "desktop/raven.ico",
+          "desktop/raven-logo.png",
+          "desktop-electron/main.js",
+          "desktop-electron/preload.js",
+          "desktop-electron/package.json",
+          "desktop-electron/package-lock.json",
+          "!hud/hardware-status.json",
+          "!hud/network-status.json",
+          "!hud/voice-event.json",
+          "!**/__pycache__/**",
+          "!**/*.pyc"
         ]
       }
     ],
-    "win": { "target": ["nsis", "portable"], "icon": "../desktop/raven.ico", "executableName": "Raven" },
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": "../desktop/raven.ico",
+      "executableName": "Raven"
+    },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,

@@ -48,12 +48,36 @@ with sync_playwright() as playwright:
     assert "Groq Free" in hud.locator("#composer-provider").text_content()
     drives = hud.evaluate("window.ravenDesktop.listFiles({path: '::drives'})")
     assert any(item["path"].upper().startswith("C:") for item in drives["entries"])
-    files = hud.evaluate("window.ravenDesktop.listFiles({path: 'C:\\\\projektjarvis'})")
+    root_path = hud.evaluate("window.ravenDesktop.rootPath()")
+    files = hud.evaluate("path => window.ravenDesktop.listFiles({path})", root_path)
     assert any(item["name"] == "raven_control.py" for item in files["entries"])
-    source = hud.evaluate("window.ravenDesktop.readFile('C:\\\\projektjarvis\\\\raven_control.py')")
+    source = hud.evaluate(
+        "path => window.ravenDesktop.readFile(`${path}\\\\raven_control.py`)",
+        root_path,
+    )
     assert "RAVEN_SYSTEM_PROMPT" in source["content"]
-    version_file = hud.evaluate("window.ravenDesktop.readFile('C:\\\\projektjarvis\\\\VERSION')")
+    version_file = hud.evaluate(
+        "path => window.ravenDesktop.readFile(`${path}\\\\VERSION`)",
+        root_path,
+    )
     assert version_file["content"].strip() in {"1.0", "v1.0"}
+    terminal_state = hud.evaluate("window.ravenDesktop.terminal.create({})")
+    terminal_id = terminal_state["terminals"][-1]["id"]
+    hud.evaluate(
+        "id => window.ravenDesktop.terminal.write({id, data: 'Write-Output RAVEN_TERMINAL_OK', permissionMode: 'full', confirmed: true})",
+        terminal_id,
+    )
+    hud.wait_for_function(
+        "id => String(terminalBuffers.get(id) || '').includes('RAVEN_TERMINAL_OK')",
+        arg=terminal_id,
+        timeout=10000,
+    )
+    hud.wait_for_function(
+        "id => String(terminalBuffers.get(id) || '').includes('[exit 0]')",
+        arg=terminal_id,
+        timeout=10000,
+    )
+    hud.evaluate("id => window.ravenDesktop.terminal.close({id})", terminal_id)
     first = hud.evaluate("window.ravenDesktop.browser.list()")
     assert len(first["tabs"]) >= 1
     second = hud.evaluate("window.ravenDesktop.browser.create('https://example.com/')")
@@ -67,6 +91,8 @@ with sync_playwright() as playwright:
     assert hud.get_by_text("Memory Manager", exact=True).count() == 1
     assert hud.get_by_text("Project Indexer", exact=True).count() == 1
     assert hud.locator("#agent-tree").get_by_text("Analytik", exact=True).count() == 1
+    assert hud.get_by_text("Goal Manager", exact=True).count() == 1
+    assert hud.get_by_text("Installer", exact=True).count() == 1
     hud.locator('[data-view="web"]').first.click()
     hud.wait_for_timeout(500)
     assert hud.locator(".native-browser-surface").count() >= 1
@@ -81,6 +107,11 @@ with sync_playwright() as playwright:
     assert hud.locator("#library-locations").count() == 1
     assert hud.locator("#add-library-folder").count() == 1
     assert hud.locator("#run-diagnostics").count() == 1
+    assert hud.locator(".provider-status-card").count() >= 9
+    assert hud.locator("#codex-status").count() == 1
+    assert "Codex" not in hud.locator("#key-provider").text_content()
+    assert abs(hud.evaluate("window.ravenDesktop.zoom(1.25)") - 1.25) < 0.01
+    assert abs(hud.evaluate("window.ravenDesktop.zoom(1)") - 1) < 0.01
     hud.locator('[data-view="chat"]').first.click()
     hud.wait_for_timeout(300)
     assert hud.locator("#task-progress").evaluate("node => node.classList.contains('hidden')") is True
@@ -114,19 +145,12 @@ with sync_playwright() as playwright:
     assert summary["count"] > 0
     if errors:
         raise AssertionError(json.dumps(errors, ensure_ascii=False, indent=2))
-    print(json.dumps({"ok": True, "tabs": len(closed["tabs"]), "files": len(files["entries"]), "agents": 2, "git_changes": summary["count"], "screenshot": str(SCREENSHOT)}, ensure_ascii=False))
+    print(json.dumps({"ok": True, "tabs": len(closed["tabs"]), "files": len(files["entries"]), "agents": 2, "git_changes": summary["count"], "screenshot": str(SCREENSHOT)}, ensure_ascii=False), flush=True)
     try:
-        browser.new_browser_cdp_session().send("Browser.close")
+        hud.evaluate("window.ravenDesktop.close()")
     except Exception as error:
-        if "closed" not in str(error).lower():
+        if "closed" not in str(error).lower() and "destroyed" not in str(error).lower():
             raise
-
-for _ in range(30):
-    try:
-        SCREENSHOT.unlink(missing_ok=True)
-        break
-    except PermissionError:
-        time.sleep(0.2)
 
 profile_value = os.environ.get("RAVEN_ELECTRON_PROFILE", "").strip()
 if profile_value:

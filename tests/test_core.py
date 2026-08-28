@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
 import threading
+from datetime import datetime
 
 import pytest
 from pydantic import ValidationError
@@ -28,16 +29,80 @@ def test_system_prompt_forbids_invented_provider_state() -> None:
     assert "ověřený výsledek příslušného nástroje" in RAVEN_SYSTEM_PROMPT
 
 
-def test_free_provider_catalog_has_required_order_and_no_grok() -> None:
+def test_free_provider_catalog_has_required_order_and_no_grok(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(raven_control, "codex_subscription_status", lambda: {
+        "available": True, "authenticated": True, "auth_method": "ChatGPT Plus", "detail": "Přihlášeno přes ChatGPT.",
+    })
     payload = provider_status()
     ids = [item["id"] for item in payload["providers"]]
     assert payload["free_only"] is True
+    assert payload["paid_exception"] is None
+    assert payload["automatic_purchases"] is False
     order = automatic_provider_order()
     assert order[-1] == "local"
     if "gemini_free" in order and "openrouter_free" in order:
         assert order.index("gemini_free") < order.index("openrouter_free")
     assert "grok" not in " ".join(ids).lower()
     assert "xai" not in " ".join(ids).lower()
+
+
+def test_codex_plus_is_never_used_by_automatic_router(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(raven_control, "load_cloud_secrets", lambda: {})
+    monkeypatch.setattr(raven_control, "provider_circuit_open", lambda _: False)
+    monkeypatch.setattr(raven_control, "codex_subscription_status", lambda: {"authenticated": True})
+    assert raven_control.automatic_provider_order("coding") == ["local"]
+    assert raven_control.automatic_provider_order("chat") == ["local"]
+
+
+def test_scheduler_accepts_daily_and_interval_formats() -> None:
+    now = datetime.fromisoformat("2026-08-28T10:00:00+02:00")
+    daily = raven_control.schedule_definition("14:30", now)
+    interval = raven_control.schedule_definition("každých 30 minut", now)
+    assert daily["mode"] == "daily"
+    assert daily["next_run"] == "2026-08-28T14:30:00+02:00"
+    assert interval["mode"] == "interval"
+    assert interval["cadence_seconds"] == 1800
+    assert interval["next_run"] == "2026-08-28T10:30:00+02:00"
+
+
+def test_scheduler_rejects_ambiguous_time() -> None:
+    with pytest.raises(ValueError, match="rozpoznán"):
+        raven_control.schedule_definition("někdy večer")
+
+
+def test_project_identity_ignores_runtime_and_hashes_sources(tmp_path: Path) -> None:
+    (tmp_path / "runtime").mkdir()
+    (tmp_path / "runtime" / "secret.txt").write_text("one", encoding="utf-8")
+    (tmp_path / "source.py").write_text("print('ok')", encoding="utf-8")
+    first = raven_control.project_identity(tmp_path)
+    (tmp_path / "runtime" / "secret.txt").write_text("two", encoding="utf-8")
+    second = raven_control.project_identity(tmp_path)
+    assert first["manifest_sha256"] == second["manifest_sha256"]
+    assert first["source_files"] == 1
+
+
+def test_integrated_terminal_executes_each_command_without_stdin_command_mode() -> None:
+    source = (ROOT / "desktop-electron" / "main.js").read_text(encoding="utf-8")
+    assert "RAVEN_TERMINAL_COMMAND" in source
+    assert "['-NoLogo', '-NoProfile', '-NoExit', '-Command', '-']" not in source
+
+
+def test_codex_plus_never_accepts_an_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(raven_control, "codex_subscription_request", lambda _: "odpověď")
+    messages = [{"role": "user", "content": "test"}]
+    assert raven_control.provider_request("codex_plus", messages) == "odpověď"
+    with pytest.raises(ValueError, match="nepoužívá API klíč"):
+        raven_control.provider_request("codex_plus", messages, api_key="x" * 32)
+
+
+def test_cloudflare_account_id_is_strictly_validated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    target = tmp_path / "cloud-provider-config.json"
+    monkeypatch.setattr(raven_control, "CLOUD_CONFIG_PATH", target)
+    with pytest.raises(ValueError, match="32 hexadecimálních"):
+        raven_control.save_cloudflare_account_id("not-valid")
+    valid = "0123456789abcdef0123456789abcdef"
+    assert raven_control.save_cloudflare_account_id(valid) == valid
+    assert raven_control.load_cloudflare_account_id() == valid
 
 
 def test_local_fallback_remains_available_when_its_previous_health_failed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -132,6 +197,32 @@ def test_confirmation_retry_reuses_brain_task_in_frontend() -> None:
     source = (ROOT / "hud" / "hud.js").read_text(encoding="utf-8")
     assert "brain_task_id:data.brain_task_id" in source
     assert "confirmation_token:data.confirmation_token" in source
+
+
+def test_settings_link_to_supported_provider_key_pages() -> None:
+    source = (ROOT / "hud" / "hud.js").read_text(encoding="utf-8")
+
+    assert "PROVIDER_KEY_PAGES" in source
+    assert "aistudio.google.com/app/apikey" in source
+    assert "openrouter.ai/settings/keys" in source
+    assert "console.groq.com/keys" in source
+    assert "cloud.cerebras.ai/platform/" in source
+    assert "console.mistral.ai/api-keys/" in source
+    assert "user_models=read" in source
+    assert "dash.cloudflare.com/profile/api-tokens" in source
+    assert 'window.open(page.url, "_blank", "noopener,noreferrer")' in source
+
+
+def test_settings_include_provider_status_codex_and_persistent_zoom() -> None:
+    source = (ROOT / "hud" / "hud.js").read_text(encoding="utf-8")
+    workbench = (ROOT / "hud" / "workbench.js").read_text(encoding="utf-8")
+    backend = (ROOT / "raven_control.py").read_text(encoding="utf-8")
+
+    assert "Otestovat všechny uložené klíče" in source
+    assert "Přihlásit přes ChatGPT" in source
+    assert "ui_zoom_percent" in source
+    assert "window.setRavenZoom" in workbench
+    assert '"ui_zoom_percent"' in backend
 
 
 @pytest.mark.parametrize("provider", ["grok", "xai", "paid", "unknown"])

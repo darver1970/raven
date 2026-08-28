@@ -1,4 +1,4 @@
-"""Bezplatné agentní jádro Ravenu s omezením dvou těžkých úloh."""
+"""Agentní jádro Ravenu s omezením dvou těžkých úloh a zákazem placených API."""
 
 from __future__ import annotations
 
@@ -98,6 +98,7 @@ class AgentRuntime:
             )
         return {
             "free_only": True,
+            "paid_exception": None,
             "max_heavy_agents": self.limit,
             "active": state.active,
             "queued": state.queued,

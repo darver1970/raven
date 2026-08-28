@@ -26,4 +26,5 @@ hud/network-status.json
 hud/voice-event.json
 version-check.json
 backup-original-files/
+backup/
 .pytest_cache/

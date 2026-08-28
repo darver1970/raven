@@ -46,13 +46,17 @@ def test_electron_smoke_profile_can_be_isolated_from_user_profile() -> None:
     assert "launcher_finished code=" in main_source
 
 
-def test_installed_nsis_executable_delegates_to_full_launcher() -> None:
+def test_every_packaged_executable_delegates_to_full_launcher() -> None:
     main_source = (ROOT / "desktop-electron" / "main.js").read_text(encoding="utf-8")
 
     assert "launcherDelegationInProgress" in main_source
     assert "spustit-raven.ps1" in main_source
     assert "wrapper.log" in main_source
     assert "!launcherDelegationInProgress" in main_source
+    assert "'-NoDesktop'" in main_source
+    assert "bootstrapInProgress = false" in main_source
+    delegation_start = main_source.index("&& !bootstrapInProgress")
+    assert "app.isPackaged" in main_source[delegation_start - 40 : delegation_start]
 
 
 def test_installer_verifies_and_launches_completed_installation() -> None:
@@ -62,6 +66,16 @@ def test_installer_verifies_and_launches_completed_installation() -> None:
     application_launch = installer_source.index("Write-Step 'Spouštím Raven 1.0.'")
     assert marker_removal < application_launch
     assert "spustit-raven.ps1" in installer_source[application_launch:]
+
+
+def test_nsis_install_reuses_packaged_electron_shell() -> None:
+    installer_source = (ROOT / "install.ps1").read_text(encoding="utf-8-sig")
+    launcher_source = (ROOT / "spustit-raven.ps1").read_text(encoding="utf-8-sig")
+
+    assert "$installedShell = Join-Path $installRoot 'Raven.exe'" in installer_source
+    assert "$desktopExecutable = $installedShell" in installer_source
+    assert "$shortcut.TargetPath = $desktopExecutable" in installer_source
+    assert '$installedShell = "$root\\Raven.exe"' in launcher_source
 
 
 def test_installer_rejects_windows_store_python_alias() -> None:
@@ -82,6 +96,41 @@ def test_installer_bootstraps_native_build_toolchain() -> None:
     assert "Get-Command link.exe" in installer_source
     assert "function Get-WingetCommand" in installer_source
     assert "Microsoft\\WindowsApps\\winget.exe" in installer_source
+
+
+def test_installer_bootstraps_visual_cpp_runtime_and_imports_native_runtime() -> None:
+    installer_source = (ROOT / "install.ps1").read_text(encoding="utf-8-sig")
+
+    assert "function Ensure-VisualCppRuntime" in installer_source
+    assert "Microsoft.VCRedist.2015+.x64" in installer_source
+    assert '"onnxruntime"' in installer_source
+    assert '"torch"' not in installer_source[installer_source.index("for module in (") :]
+
+
+def test_installer_starts_isolated_ollama_before_pulling_models() -> None:
+    installer_source = (ROOT / "install.ps1").read_text(encoding="utf-8-sig")
+
+    server_start = installer_source.index("$ollamaServer = Start-Process")
+    health_check = installer_source.index("/api/version", server_start)
+    model_pull = installer_source.index("& $ollamaPath pull $model", health_check)
+    assert server_start < health_check < model_pull
+    assert '$env:OLLAMA_HOST = "127.0.0.1:$ollamaInstallPort"' in installer_source
+    assert "Stop-Process -Id $ollamaServer.Id" in installer_source
+    assert "Find-OllamaExecutable" in installer_source
+
+
+def test_bootstrap_propagates_noninteractive_test_mode() -> None:
+    main_source = (ROOT / "desktop-electron" / "main.js").read_text(encoding="utf-8")
+
+    assert "RAVEN_INSTALL_NONINTERACTIVE" in main_source
+
+
+def test_installer_downloads_have_bounded_timeouts() -> None:
+    installer_source = (ROOT / "install.ps1").read_text(encoding="utf-8-sig")
+
+    assert "OpenJarvis-$openJarvisCommit.zip" in installer_source
+    assert "-TimeoutSec 600" in installer_source
+    assert installer_source.count("-TimeoutSec 90") >= 2
 
 
 def test_installer_recovers_partial_openjarvis_environment() -> None:
@@ -126,6 +175,25 @@ def test_installer_preserves_codex_project_rules() -> None:
     assert "AGENTS.md" in filters
 
 
+def test_desktop_shutdown_runs_project_scoped_cleanup() -> None:
+    main_source = (ROOT / "desktop-electron" / "main.js").read_text(encoding="utf-8")
+    installer_source = (ROOT / "install.ps1").read_text(encoding="utf-8-sig")
+    stop_source = (ROOT / "stop-raven.ps1").read_text(encoding="utf-8-sig")
+
+    assert "app.on('before-quit', stopRavenServices)" in main_source
+    assert "stop-raven.ps1" in main_source
+    assert "'stop-raven.ps1'" in installer_source
+    assert "Test-PathInsideRoot" in stop_source
+    assert "Test-RavenServiceSignature" in stop_source
+    assert "raven_control\\.py" in stop_source
+    assert "openclaw\\.mjs" in stop_source
+    assert "$serviceNames" in stop_source
+    assert "ollama-process.json" in stop_source
+    assert "taskkill.exe" in stop_source
+    assert "ParentProcessId" in stop_source
+    assert "excludedProcessIds" in stop_source
+
+
 def test_launcher_does_not_stop_foreign_ollama() -> None:
     launcher_source = (ROOT / "spustit-raven.ps1").read_text(encoding="utf-8-sig")
 
@@ -134,6 +202,9 @@ def test_launcher_does_not_stop_foreign_ollama() -> None:
     assert "launcher.log" in launcher_source
     assert "Wait-RavenHttp" in launcher_source
     assert "/v1/agents/health" in launcher_source
+    assert "ollama-process.json" in launcher_source
+    assert "Test-RavenOllamaPort" in launcher_source
+    assert "started_at_utc" in launcher_source
 
 
 def test_launcher_supports_install_paths_with_spaces() -> None:
@@ -143,4 +214,5 @@ def test_launcher_supports_install_paths_with_spaces() -> None:
     assert "-ArgumentList 'hardware_monitor.py'" in launcher_source
     assert "-ArgumentList 'raven_control.py'" in launcher_source
     assert "-ArgumentList 'network_monitor.py'" in launcher_source
-    assert "-ArgumentList '.'" in launcher_source
+    assert "$electronArguments += '.'" in launcher_source
+    assert "-ArgumentList $electronArguments" in launcher_source

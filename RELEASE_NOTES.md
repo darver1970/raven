@@ -18,7 +18,10 @@
 - opravený globální limit souběžných těžkých agentů i při souběžných HTTP požadavcích;
 - instalátor kopíruje a před dokončením také syntakticky ověří nové jádro `raven_brain.py`;
 - licence zůstává Apache License 2.0, kredity a samostatné závislosti byly doplněny v `NOTICE`.
-- pravidla práce pro Codex jsou uložená přímo v `AGENTS.md`, takže platí také pro přenesenou kopii na jiném PC.
+- pravidla práce pro Codex jsou uložená přímo v `AGENTS.md`, takže platí také pro přenesenou kopii na jiném PC;
+- instalátor připraví tři bezplatné lokální modely `qwen3.5:4b`, `qwen3.5:9b` a `qwen2.5-coder:7b` přímo v instalační složce;
+- vlastní Ollama je svázaná s ověřeným PID, spouštěcím časem a instalačním kořenem; zavření Ravenu ukončí celý její procesový strom, ale nedotkne se cizí Ollamy;
+- NSIS instalace používá zabalený Electron shell a na cílovém počítači znovu nesestavuje desktopovou aplikaci.
 
 ## Ověření sestavení
 
@@ -26,7 +29,10 @@
 - kontroly syntaxe Pythonu, JavaScriptu a PowerShellu;
 - skutečný test zabaleného Electron rozhraní v izolovaném profilu;
 - kontrola instalační smlouvy, povinných souborů a sestaveného EXE;
-- test lokálního API, oddělení chatů a jednorázového potvrzení včetně odmítnutí opakovaného použití.
+- test lokálního API, oddělení chatů a jednorázového potvrzení včetně odmítnutí opakovaného použití;
+- čistá instalace do nové složky včetně závislostí, tří modelů a závěrečného ověřovacího souboru;
+- spuštění nainstalovaného `Raven.exe`, načtení HUD, terminál, agentní strom, telemetrie, vytvoření a odstranění souboru přes chat a skutečná lokální odpověď `42`;
+- zavření nainstalované aplikace s výsledkem nula vlastních procesů a nula naslouchajících portů Raven.
 
 ## Soubor releasu
 

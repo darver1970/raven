@@ -13,7 +13,8 @@
   "embedding_model": "mxbai-embed-large",
   "adapters": ["gemini", "openrouter", "groq", "cerebras", "mistral", "github_models", "cloudflare_workers_ai", "ollama", "openai_compatible"],
   "free_only": true,
-  "forbidden_providers": ["grok", "xai", "paid"],
+  "forbidden_providers": ["grok", "xai", "paid_api"],
+  "paid_exception": null,
   "openrouter_approved_models": ["openrouter/free"],
   "coding_pattern": "\\b(kód|code|program|skript|debug|chyba|html|css|javascript|python|api|plugin|refaktor)\\b",
   "complex_pattern": "\\b(analyzuj|naplánuj|architektura|porovnej|výzkum|strategie|autonom)\\b"
