@@ -104,6 +104,19 @@ PROVIDERS: dict[str, dict[str, str]] = {
     "automatic": {"label": "Automaticky", "model": "Gemini, OpenRouter, další bezplatné zdroje a lokální Ollama"},
 }
 
+PROVIDER_CATALOG: dict[str, dict[str, Any]] = {
+    "local": {"limit": "Bez účtového limitu", "modalities": ["text", "code"], "privacy": "Data neopouštějí počítač.", "sends_data_online": False},
+    "codex_plus": {"limit": "Dle předplatného ChatGPT", "modalities": ["text", "code"], "privacy": "Data jsou odeslána službě OpenAI po ručním přihlášení.", "sends_data_online": True},
+    "gemini_free": {"limit": "Limity dle aktivního projektu Google AI Studio", "modalities": ["text", "code", "vision", "documents"], "privacy": "Bezplatná úroveň může používat obsah ke zlepšování služeb Google.", "sends_data_online": True, "key_url": "https://aistudio.google.com/app/apikey"},
+    "openrouter_free": {"limit": "Obvykle 50 požadavků/den bez zakoupených kreditů", "modalities": ["text", "code", "reasoning"], "privacy": "Požadavek prochází OpenRouterem a provozovatelem modelu.", "sends_data_online": True, "key_url": "https://openrouter.ai/settings/keys"},
+    "groq_free": {"limit": "Modelové limity; typicky až 30 RPM", "modalities": ["text", "code", "reasoning"], "privacy": "Obsah je odeslán do GroqCloud.", "sends_data_online": True, "key_url": "https://console.groq.com/keys"},
+    "cerebras_free": {"limit": "Bezplatné limity účtu Cerebras", "modalities": ["text", "code", "reasoning"], "privacy": "Obsah je odeslán do Cerebras Cloud.", "sends_data_online": True, "key_url": "https://cloud.cerebras.ai/platform/"},
+    "mistral_free": {"limit": "Bezplatné limity účtu Mistral", "modalities": ["text", "code"], "privacy": "Obsah je odeslán do Mistral AI.", "sends_data_online": True, "key_url": "https://console.mistral.ai/api-keys/"},
+    "github_models_free": {"limit": "Limity GitHub Models dle modelu a účtu", "modalities": ["text", "code", "vision"], "privacy": "Obsah je odeslán službě GitHub Models.", "sends_data_online": True, "key_url": "https://github.com/marketplace/models"},
+    "cloudflare_free": {"limit": "Denní příděl Workers AI", "modalities": ["text", "code"], "privacy": "Obsah je odeslán do vašeho účtu Cloudflare.", "sends_data_online": True, "key_url": "https://dash.cloudflare.com/profile/api-tokens"},
+    "automatic": {"limit": "Použije nastavené pořadí", "modalities": ["text", "code"], "privacy": "Online provider se použije jen po výslovném povolení.", "sends_data_online": False},
+}
+
 OPENAI_COMPATIBLE_PROVIDERS = {
     "openrouter_free": "https://openrouter.ai/api/v1/chat/completions",
     "groq_free": "https://api.groq.com/openai/v1/chat/completions",
@@ -149,7 +162,7 @@ BUILTIN_AGENTS = [
     {"id": "model-router", "name": "Model Router", "group": "Core", "role": "Gemini, OpenRouter, další free zdroje a lokální fallback", "tools": ["provider-health", "free-quota", "fallback"], "dependencies": ["raven"], "model": "local"},
 ]
 
-RAVEN_SYSTEM_PROMPT = """Jsi centrální textový asistent Raven 1.0. Odpovídej česky, pokud uživatel nepoužije jiný jazyk.
+RAVEN_SYSTEM_PROMPT = """Jsi centrální textový asistent Raven 1.1. Odpovídej česky, pokud uživatel nepoužije jiný jazyk.
 Buď přesný, praktický a stručný. Nevymýšlej si fakta, dokončené akce ani výsledky nástrojů.
 Nikdy netvrď, že jsi vytvořil, upravil, smazal, spustil, nainstaloval nebo nahrál něco, pokud Raven nemá ověřený výsledek příslušného nástroje.
 Když nástroj nebyl použit nebo jeho výsledek nebyl ověřen, popiš pouze návrh či omezení a nesděluj akci jako dokončenou.
@@ -908,6 +921,7 @@ def provider_status() -> dict[str, Any]:
             "configured": configured,
             "health": provider_health if isinstance(provider_health, dict) else {},
             "kind": "local" if provider_id == "local" else "automatic" if provider_id == "automatic" else "free",
+            **PROVIDER_CATALOG.get(provider_id, {}),
         }
         if provider_id == "codex_plus":
             item.update(codex)
@@ -940,19 +954,28 @@ def active_provider_status() -> dict[str, str]:
 
 
 def load_settings() -> dict[str, Any]:
-    """Načte pouze nastavení verze 1.0 a odstraní zbytky hlasové verze."""
+    """Načte podporované nastavení a odstraní zbytky hlasové verze."""
     defaults = load_document(DEFAULT_SETTINGS_PATH, "settings") if DEFAULT_SETTINGS_PATH.exists() else {}
     current = load_document(SETTINGS_PATH, "settings")
     allowed = {
         "default_model", "internet_mode", "router_mode", "permission_mode",
         "project_start_required", "start_with_windows", "borderless_window",
         "powershell_uac", "ai_provider", "cloud_api", "open_source_only", "simulation_mode", "ui_zoom_percent",
+        "provider_order", "online_provider_notice_acknowledged",
     }
     settings = {key: current.get(key, defaults.get(key)) for key in allowed if key in current or key in defaults}
     settings["ai_provider"] = normalize_provider(settings.get("ai_provider", "automatic"))
     settings.setdefault("router_mode", "automatic")
     settings.setdefault("permission_mode", "full")
     settings.setdefault("simulation_mode", False)
+    configured_order = settings.get("provider_order", [])
+    if not isinstance(configured_order, list):
+        configured_order = []
+    settings["provider_order"] = [provider for provider in configured_order if provider in PROVIDERS and provider not in {"automatic", "codex_plus"}]
+    for provider in ("local", "groq_free", "gemini_free", "cerebras_free", "openrouter_free", "mistral_free", "github_models_free", "cloudflare_free"):
+        if provider not in settings["provider_order"]:
+            settings["provider_order"].append(provider)
+    settings["online_provider_notice_acknowledged"] = settings.get("online_provider_notice_acknowledged") is True
     try:
         settings["ui_zoom_percent"] = max(75, min(150, int(settings.get("ui_zoom_percent", 100))))
     except (TypeError, ValueError):
@@ -991,9 +1014,11 @@ def automatic_provider_order(intent: TaskIntent | str = TaskIntent.CHAT) -> list
         and (provider == "local" or provider in secrets)
         and (provider == "local" or not provider_circuit_open(provider))
     ]
-    health = load_document(PROVIDER_HEALTH_PATH, "providers").get("providers", {})
-    ordered = rank_free_providers(available, intent_value, health if isinstance(health, dict) else {})
-    return ordered
+    settings = load_settings()
+    if not settings.get("online_provider_notice_acknowledged"):
+        return ["local"] if "local" in available else []
+    configured = settings.get("provider_order", [])
+    return [provider for provider in configured if provider in available]
 
 
 def provider_circuit_open(provider: str) -> bool:
@@ -1164,7 +1189,7 @@ def provider_request(
                 data = json.loads(response.read().decode("utf-8"))
             answer = "".join(str(part.get("text", "")) for part in data["candidates"][0]["content"]["parts"])
         elif provider in OPENAI_COMPATIBLE_PROVIDERS:
-            request = urllib.request.Request(OPENAI_COMPATIBLE_PROVIDERS[provider], data=json.dumps({"model": selected_model, "messages": sanitized, "max_tokens": 2000}, ensure_ascii=False).encode("utf-8"), headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}", "X-Title": "Raven 1.0 free-only"}, method="POST")
+            request = urllib.request.Request(OPENAI_COMPATIBLE_PROVIDERS[provider], data=json.dumps({"model": selected_model, "messages": sanitized, "max_tokens": 2000}, ensure_ascii=False).encode("utf-8"), headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}", "X-Title": "Raven 1.1 free-only"}, method="POST")
             with urllib.request.urlopen(request, timeout=45) as response:
                 data = json.loads(response.read().decode("utf-8"))
             answer = str(data["choices"][0]["message"]["content"])
@@ -1209,7 +1234,7 @@ def provider_request(
 def load_project_memory() -> dict[str, Any]:
     """Načte sdílené poznatky o projektu se stabilní strukturou."""
     memory = load_document(PROJECT_MEMORY_PATH, "entries")
-    memory.setdefault("project", "Raven 1.0")
+    memory.setdefault("project", "Raven 1.1")
     memory.setdefault("summary", "Lokální RAVEN pro Windows.")
     entries = memory.get("entries", [])
     memory["entries"] = [entry for entry in entries if isinstance(entry, dict)][-120:]
@@ -1285,8 +1310,8 @@ def clean_obsolete_memory() -> None:
         cleaned = [entry for entry in memory["entries"] if not any(token in f"{entry.get('title','')} {entry.get('summary','')}".lower() for token in obsolete)]
         if len(cleaned) != len(memory["entries"]):
             memory["entries"] = cleaned
-            memory["project"] = "Raven 1.0"
-            memory["summary"] = f"Lokální textový Raven 1.0 pro Windows uložený v {ROOT}."
+            memory["project"] = "Raven 1.1"
+            memory["summary"] = f"Lokální textový Raven 1.1 pro Windows uložený v {ROOT}."
             save_document(PROJECT_MEMORY_PATH, memory)
 
 
@@ -2342,12 +2367,23 @@ class Handler(BaseHTTPRequestHandler):
                 allowed = {
                     "default_model", "internet_mode", "router_mode", "permission_mode",
                     "project_start_required", "start_with_windows", "borderless_window", "powershell_uac", "ai_provider", "simulation_mode", "ui_zoom_percent",
+                    "provider_order", "online_provider_notice_acknowledged",
                 }
                 current = load_settings()
                 for key, value in data.items():
                     if key in allowed:
                         current[key] = value
                 current["ai_provider"] = normalize_provider(current.get("ai_provider", "local"))
+                if "provider_order" in data:
+                    if not isinstance(data["provider_order"], list):
+                        raise ValueError("Pořadí poskytovatelů musí být seznam.")
+                    cleaned = [str(provider) for provider in data["provider_order"] if str(provider) in PROVIDERS and str(provider) not in {"automatic", "codex_plus"}]
+                    expected = {provider for provider in PROVIDERS if provider not in {"automatic", "codex_plus"}}
+                    if set(cleaned) != expected or len(cleaned) != len(set(cleaned)):
+                        raise ValueError("Pořadí musí obsahovat každého bezplatného poskytovatele právě jednou.")
+                    current["provider_order"] = cleaned
+                if "online_provider_notice_acknowledged" in data and not isinstance(data["online_provider_notice_acknowledged"], bool):
+                    raise ValueError("Souhlas s online poskytovateli musí mít hodnotu ano nebo ne.")
                 try:
                     current["ui_zoom_percent"] = max(75, min(150, int(current.get("ui_zoom_percent", 100))))
                 except (TypeError, ValueError):
@@ -2414,6 +2450,8 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/chat":
                 settings = load_settings()
                 provider = normalize_provider(settings.get("ai_provider", "local"))
+                if provider not in {"local", "automatic", "codex_plus"} and not settings.get("online_provider_notice_acknowledged"):
+                    raise ValueError("Nejdříve v Nastavení potvrďte, že online AI odešle obsah konverzace zvolenému poskytovateli.")
                 raw_messages = data.get("messages", [])
                 if not isinstance(raw_messages, list):
                     raise ValueError("Zprávy pro online model mají neplatný formát.")

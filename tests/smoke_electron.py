@@ -36,9 +36,10 @@ with sync_playwright() as playwright:
     hud.on("pageerror", lambda error: errors.append(str(error)))
     hud.reload(wait_until="domcontentloaded")
     hud.wait_for_timeout(1200)
+    hud.wait_for_function("state.providers.length > 0 && state.settings.provider_order.length > 0", timeout=15000)
     hud.evaluate("document.querySelectorAll('dialog[open]').forEach(dialog => dialog.close())")
-    assert hud.title() == "Raven 1.0"
-    assert hud.locator(".app-menu-brand").text_content().strip() == "Raven 1.0"
+    assert hud.title() == "Raven 1.1"
+    assert hud.locator(".app-menu-brand").text_content().strip() == "Raven 1.1"
     assert hud.locator(".app-menu").count() == 3
     assert hud.evaluate("Boolean(window.ravenDesktop)") is True
     assert hud.locator("#composer-access").input_value() == "full"
@@ -46,6 +47,12 @@ with sync_playwright() as playwright:
     assert hud.locator("#change-card").evaluate("node => node.classList.contains('hidden')") is True
     assert hud.locator("#change-card").evaluate("node => node.parentElement.id") == "messages"
     assert "Groq Free" in hud.locator("#composer-provider").text_content()
+    hud.locator('[data-view="settings"]').first.click()
+    hud.wait_for_timeout(400)
+    assert hud.locator("#online-provider-ack").count() == 1
+    provider_order_rows = hud.locator(".provider-order-row").count()
+    assert provider_order_rows == 8, provider_order_rows
+    assert "Data neopouštějí počítač" in hud.locator(".provider-status-grid").text_content()
     drives = hud.evaluate("window.ravenDesktop.listFiles({path: '::drives'})")
     assert any(item["path"].upper().startswith("C:") for item in drives["entries"])
     root_path = hud.evaluate("window.ravenDesktop.rootPath()")
@@ -60,7 +67,7 @@ with sync_playwright() as playwright:
         "path => window.ravenDesktop.readFile(`${path}\\\\VERSION`)",
         root_path,
     )
-    assert version_file["content"].strip() in {"1.0", "v1.0"}
+    assert version_file["content"].strip() in {"1.1", "v1.1"}
     terminal_state = hud.evaluate("window.ravenDesktop.terminal.create({})")
     terminal_id = terminal_state["terminals"][-1]["id"]
     hud.evaluate(
@@ -120,7 +127,7 @@ with sync_playwright() as playwright:
       await fetch('http://127.0.0.1:8126/chat', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({simulate:true, model:'automatic', messages:[{role:'user', content:'Vytvoř soubor raven-ui-live-log-test.txt na ploše'}]})});
     }""")
     hud.wait_for_selector(".live-work-log article", timeout=5000)
-    hud.wait_for_timeout(500)
+    hud.wait_for_function("document.querySelector('.live-work-log')?.textContent.includes('Úkol dokončen')", timeout=10000)
     work_log = hud.locator(".live-work-log")
     assert work_log.locator("article").count() >= 5
     assert work_log.locator(":scope > div").evaluate("node => getComputedStyle(node).maxHeight") == "none"
@@ -158,12 +165,14 @@ if profile_value:
     runtime_root = (ROOT / "runtime").resolve()
     if profile.parent != runtime_root or not profile.name.startswith("electron-smoke-"):
         raise RuntimeError(f"Odmítám uklidit neplatný testovací profil: {profile}")
-    for attempt in range(30):
+    for attempt in range(80):
         try:
             if profile.exists():
                 shutil.rmtree(profile)
             break
         except PermissionError:
-            if attempt == 29:
-                raise
-            time.sleep(0.2)
+            # Electron může po zavření okna ještě držet cache. Finální úklid
+            # provede runner až po zastavení všech procesů.
+            if attempt == 79:
+                break
+            time.sleep(0.25)

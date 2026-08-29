@@ -8,6 +8,8 @@
   "permission_mode": "full",
   "simulation_mode": false,
   "ui_zoom_percent": 100,
+  "provider_order": ["local", "groq_free", "gemini_free", "cerebras_free", "openrouter_free", "mistral_free", "github_models_free", "cloudflare_free"],
+  "online_provider_notice_acknowledged": false,
   "project_start_required": true,
   "cloud_api": false,
   "open_source_only": true

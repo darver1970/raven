@@ -19,8 +19,8 @@ from raven_intelligence import detect_local_file_action, execute_file_action
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def test_version_is_one_zero() -> None:
-    assert (ROOT / "VERSION").read_text(encoding="utf-8").strip() in {"1.0", "v1.0"}
+def test_version_is_one_one() -> None:
+    assert (ROOT / "VERSION").read_text(encoding="utf-8").strip() in {"1.1", "v1.1"}
 
 
 def test_system_prompt_forbids_invented_provider_state() -> None:
@@ -44,6 +44,29 @@ def test_free_provider_catalog_has_required_order_and_no_grok(monkeypatch: pytes
         assert order.index("gemini_free") < order.index("openrouter_free")
     assert "grok" not in " ".join(ids).lower()
     assert "xai" not in " ".join(ids).lower()
+    online = [item for item in payload["providers"] if item.get("sends_data_online")]
+    assert online
+    assert all(item.get("privacy") and item.get("limit") for item in online)
+
+
+def test_online_fallback_requires_acknowledgement(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(raven_control, "load_cloud_secrets", lambda: {"groq_free": "encrypted"})
+    monkeypatch.setattr(raven_control, "provider_circuit_open", lambda _: False)
+    monkeypatch.setattr(raven_control, "load_settings", lambda: {
+        "online_provider_notice_acknowledged": False,
+        "provider_order": ["groq_free", "local"],
+    })
+    assert raven_control.automatic_provider_order() == ["local"]
+
+
+def test_user_provider_order_is_respected(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(raven_control, "load_cloud_secrets", lambda: {"groq_free": "encrypted", "gemini_free": "encrypted"})
+    monkeypatch.setattr(raven_control, "provider_circuit_open", lambda _: False)
+    monkeypatch.setattr(raven_control, "load_settings", lambda: {
+        "online_provider_notice_acknowledged": True,
+        "provider_order": ["local", "groq_free", "gemini_free"],
+    })
+    assert raven_control.automatic_provider_order() == ["local", "groq_free", "gemini_free"]
 
 
 def test_codex_plus_is_never_used_by_automatic_router(monkeypatch: pytest.MonkeyPatch) -> None:

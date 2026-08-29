@@ -1,12 +1,14 @@
-# Raven 1.0
+# Raven 1.1
 
-Raven 1.0 je lokální desktopový AI pracovní prostor pro 64bitové Windows 10 a Windows 11. Má tmavé textové rozhraní, lokální historii chatů a projektů, přehled agentů, úkolů, telemetrie a procesů. Hlasové funkce byly z verze 1.0 zcela odstraněny.
+Raven 1.1 je lokální desktopový AI pracovní prostor pro 64bitové Windows 10 a Windows 11. Má tmavé textové rozhraní, lokální historii chatů a projektů, přehled agentů, úkolů, telemetrie a procesů. Verze 1.1 přidává bezpečný katalog bezplatných online modelů, nastavitelné fallbacky a výslovnou ochranu soukromí.
+
+Online AI je volitelná. Automatický router používá pouze lokální Ollamu, dokud uživatel v nastavení nepotvrdí odesílání obsahu online poskytovatelům. Raven nikdy automaticky neaktivuje placený model ani předplatné.
 
 ## Nejjednodušší instalace
 
-1. Na stránce [Releases](https://github.com/darver1970/raven/releases/tag/v1.0) stáhněte pouze `Raven-1.0-Setup.exe` z vydání 1.0.
+1. Na stránce [Releases](https://github.com/darver1970/raven/releases/tag/v1.1) stáhněte pouze `Raven-1.1-Setup.exe` z vydání 1.1.
 2. Spusťte instalátor. Při prvním spuštění se Raven zeptá na jedinou pracovní složku; výchozí je `C:\Raven`. Do zvolené složky uloží zdroje, modely, runtime i data a připraví pouze bezplatné závislosti.
-3. Dokončení první instalace může trvat déle kvůli stažení tří lokálních modelů `qwen3.5:4b`, `qwen3.5:9b` a `qwen2.5-coder:7b`. Potom spusťte zástupce **Raven 1.0** na ploše.
+3. Dokončení první instalace může trvat déle kvůli stažení tří lokálních modelů `qwen3.5:4b`, `qwen3.5:9b` a `qwen2.5-coder:7b`. Potom spusťte zástupce **Raven 1.1** na ploše.
 
 Opravné sestavení podporuje také instalační cesty s mezerami, diakritikou a cílovou složku pojmenovanou `Desktop`. Instalace do kořene systémového disku nebo přímo do společné plochy může vyžadovat potvrzení správce Windows.
 
@@ -29,7 +31,7 @@ Pokud nechcete použít EXE, stáhněte ZIP zdrojového kódu z GitHubu, rozbalt
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -InstallPath C:\Raven
 ```
 
-Instalátor podle potřeby doplní Git, Node.js LTS, Ollamu, Python prostředí, agentní knihovny a desktopovou vrstvu. Hotovou instalaci lze otevřít zástupcem `Raven 1.0` nebo souborem `Raven.exe` ve zvolené instalační složce. Ruční instalace ze zdrojů vytváří také `desktop\Raven-Desktop.exe`.
+Instalátor podle potřeby doplní Git, Node.js LTS, Ollamu, Python prostředí, agentní knihovny a desktopovou vrstvu. Hotovou instalaci lze otevřít zástupcem `Raven 1.1` nebo souborem `Raven.exe` ve zvolené instalační složce. Ruční instalace ze zdrojů vytváří také `desktop\Raven-Desktop.exe`.
 
 ### Aktualizace
 
@@ -89,12 +91,12 @@ Rozhraní a návrh pracovních postupů vycházejí z veřejně dostupných prin
 
 Před vydáním se kontroluje syntaxe Pythonu, PowerShellu a JavaScriptu, lokální API, souběh agentů, jednorázová potvrzení, zotavení úloh, načtení skutečného Electron rozhraní, psaní do editoru, historie, telemetrie, skutečný souborový nástroj přes chat, lokální odpověď modelu, čisté ukončení všech vlastních procesů a obsah instalačního EXE. Raven si eviduje přesný proces své Ollamy a při ukončení nesmí zastavit cizí instanci. GitHub se aktualizuje pouze na výslovný pokyn uživatele.
 
-Výsledné soubory jsou `desktop/Raven-Desktop.exe` pro běžné spuštění a `desktop-dist/Raven-1.0-Setup.exe` jako instalační balíček. Instalační EXE obsahuje zdrojovou část Ravenu 1.0 a na čistém podporovaném počítači spustí přípravu bezplatných závislostí.
+Výsledné soubory jsou `desktop/Raven-Desktop.exe` pro běžné spuštění a `desktop-dist/Raven-1.1-Setup.exe` jako instalační balíček. Instalační EXE obsahuje zdrojovou část Ravenu 1.1 a na čistém podporovaném počítači spustí přípravu bezplatných závislostí.
 
 ## Kredity
 
-Instalátor Raven 1.0 stahuje oficiální OpenJarvis jako samostatnou běhovou závislost; jeho zdrojový kód není součástí tohoto repozitáře ani instalačního EXE. Další samostatné open-source knihovny jsou uvedeny v souboru [`NOTICE`](NOTICE). Rozhraní a pracovní postupy byly navrženy také s přihlédnutím k veřejným principům projektů Open WebUI, OpenCode, Vane, Meetily, agenticSeek a Claw Code. Jejich zdrojový kód není součástí Ravenu 1.0 a projekt si nenárokuje jejich značky ani podporu.
+Instalátor Raven 1.1 stahuje oficiální OpenJarvis jako samostatnou běhovou závislost; jeho zdrojový kód není součástí tohoto repozitáře ani instalačního EXE. Další samostatné open-source knihovny jsou uvedeny v souboru [`NOTICE`](NOTICE). Rozhraní a pracovní postupy byly navrženy také s přihlédnutím k veřejným principům projektů Open WebUI, OpenCode, Vane, Meetily, agenticSeek a Claw Code. Jejich zdrojový kód není součástí Ravenu 1.1 a projekt si nenárokuje jejich značky ani podporu.
 
 ## Licence
 
-Raven 1.0 je vydán pod Apache License 2.0. Podrobné kredity a licence integrovaných nebo volitelných komponent jsou v souboru `NOTICE`.
+Raven 1.1 je vydán pod Apache License 2.0. Podrobné kredity a licence integrovaných nebo volitelných komponent jsou v souboru `NOTICE`.

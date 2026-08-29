@@ -66,8 +66,8 @@ def main() -> None:
             hud.wait_for_timeout(1200)
             hud.evaluate("document.querySelectorAll('dialog[open]').forEach(dialog => dialog.close())")
 
-            assert hud.title() == "Raven 1.0"
-            assert hud.locator(".app-menu-brand").text_content().strip() == "Raven 1.0"
+            assert hud.title() == "Raven 1.1"
+            assert hud.locator(".app-menu-brand").text_content().strip() == "Raven 1.1"
             assert hud.evaluate("Boolean(window.ravenDesktop)") is True
             installed_root = Path(hud.evaluate("window.ravenDesktop.rootPath()")).resolve()
             assert installed_root == root

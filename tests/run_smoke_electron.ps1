@@ -35,4 +35,15 @@ try {
     $env:RAVEN_DEBUG_PORT = $previousPort
     $env:RAVEN_ELECTRON_PROFILE = $previousProfile
     try { & $stopper -InstallRoot $root -TimeoutSeconds 20 } catch { Write-Warning $_.Exception.Message }
+    if ($profile.StartsWith((Join-Path $root 'runtime\electron-smoke-')) -and (Test-Path -LiteralPath $profile)) {
+        for ($attempt = 0; $attempt -lt 40; $attempt++) {
+            try {
+                Remove-Item -LiteralPath $profile -Recurse -Force -ErrorAction Stop
+                break
+            } catch {
+                if ($attempt -eq 39) { Write-Warning "Dočasný profil zůstává zamčený: $profile" }
+                Start-Sleep -Milliseconds 250
+            }
+        }
+    }
 }

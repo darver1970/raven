@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Instaluje Raven 1.0 do jediné projektové složky.
+    Instaluje Raven 1.1 do jediné projektové složky.
 
 .DESCRIPTION
     Stahuje pouze bezplatné závislosti z oficiálních zdrojů, založí lokální
@@ -351,11 +351,11 @@ if ($installRoot -ne $sourceRoot) {
         }
     }
     New-Item -ItemType Directory -Path $installRoot -Force | Out-Null
-    Set-Content -LiteralPath $installMarker -Value 'Raven 1.0 installation in progress' -Encoding utf8
-    Write-Step "Kopíruji soubory Raven 1.0 do $installRoot"
+    Set-Content -LiteralPath $installMarker -Value 'Raven 1.1 installation in progress' -Encoding utf8
+    Write-Step "Kopíruji soubory Raven 1.1 do $installRoot"
     Copy-RavenFiles -From $sourceRoot -To $installRoot
 } else {
-    Set-Content -LiteralPath $installMarker -Value 'Raven 1.0 installation in progress' -Encoding utf8
+    Set-Content -LiteralPath $installMarker -Value 'Raven 1.1 installation in progress' -Encoding utf8
 }
 
 $runtime = Join-Path $installRoot 'runtime'
@@ -398,7 +398,7 @@ $sourceVersion = if (Test-Path -LiteralPath $openJarvisVersionFile -PathType Lea
     (Get-Content -LiteralPath $openJarvisVersionFile -Raw).Trim()
 } else { '' }
 if ($sourceVersion -ne $openJarvisCommit -or -not (Test-Path -LiteralPath (Join-Path $openJarvisSource 'pyproject.toml') -PathType Leaf)) {
-    Write-Step 'Stahuji ověřený zdroj OpenJarvisu pro Raven 1.0.'
+    Write-Step 'Stahuji ověřený zdroj OpenJarvisu pro Raven 1.1.'
     $openJarvisArchive = Join-Path $runtime "OpenJarvis-$openJarvisCommit.zip"
     $openJarvisStaging = Join-Path $runtime "OpenJarvis-$openJarvisCommit-staging"
     $previousProgress = $ProgressPreference
@@ -425,7 +425,7 @@ if ($sourceVersion -ne $openJarvisCommit -or -not (Test-Path -LiteralPath (Join-
     Remove-Item -LiteralPath $openJarvisArchive -Force
     Remove-Item -LiteralPath $openJarvisStaging -Recurse -Force
 } else {
-    Write-Step 'Používám ověřený zdroj OpenJarvisu pro Raven 1.0.'
+    Write-Step 'Používám ověřený zdroj OpenJarvisu pro Raven 1.1.'
 }
 $uv = Ensure-Uv
 $venvPython = Join-Path $openJarvisSource '.venv\Scripts\python.exe'
@@ -494,7 +494,7 @@ Invoke-NativeChecked -FilePath $python -Arguments @(
 ) -FailureMessage 'Instalace agentních komponent selhala'
 Invoke-NativeChecked -FilePath $python -Arguments @('-m', 'pip', 'check') -FailureMessage 'Python závislosti agentního jádra nejsou kompatibilní'
 
-Write-Step 'Vytvářím lokální konfiguraci Raven 1.0.'
+Write-Step 'Vytvářím lokální konfiguraci Raven 1.1.'
 foreach ($template in Get-ChildItem -LiteralPath (Join-Path $installRoot 'defaults') -Filter '*.json') {
     $destination = Join-Path $runtime $template.Name
     if (-not (Test-Path -LiteralPath $destination)) {
@@ -804,13 +804,13 @@ $verificationReport = [ordered]@{
 }
 $verificationReport | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $runtime 'install-verification.json') -Encoding utf8
 
-$shortcutPath = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Raven 1.0.lnk'
+$shortcutPath = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Raven 1.1.lnk'
 $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut($shortcutPath)
 $shortcut.TargetPath = $desktopExecutable
 $shortcut.Arguments = ''
 $shortcut.WorkingDirectory = $installRoot
-$shortcut.Description = 'Spustit lokální Raven 1.0'
+$shortcut.Description = 'Spustit lokální Raven 1.1'
 $shortcut.IconLocation = "$desktopExecutable,0"
 $shortcut.Save()
 
@@ -822,7 +822,7 @@ Write-Step "Instalace dokončena v $installRoot"
 try { Stop-Transcript | Out-Null } catch {}
 
 if (-not $NoLaunch) {
-    Write-Step 'Spouštím Raven 1.0.'
+    Write-Step 'Spouštím Raven 1.1.'
     Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
         -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', "`"$installRoot\spustit-raven.ps1`"" `
         -WorkingDirectory $installRoot

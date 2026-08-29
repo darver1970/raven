@@ -100,7 +100,7 @@ def test_installer_verifies_and_launches_completed_installation() -> None:
     installer_source = (ROOT / "install.ps1").read_text(encoding="utf-8-sig")
 
     marker_removal = installer_source.index("Remove-Item -LiteralPath $installMarker")
-    application_launch = installer_source.index("Write-Step 'Spouštím Raven 1.0.'")
+    application_launch = installer_source.index("Write-Step 'Spouštím Raven 1.1.'")
     assert marker_removal < application_launch
     assert "spustit-raven.ps1" in installer_source[application_launch:]
 

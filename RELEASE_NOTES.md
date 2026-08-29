@@ -1,4 +1,15 @@
-# Raven 1.0 – opravné a rozšířené sestavení
+# Raven 1.1 – bezpečný katalog bezplatných AI
+
+## Novinky 1.1
+
+- nastavení zobrazuje bezplatné limity, modality a upozornění na soukromí u každého podporovaného poskytovatele;
+- uživatel může měnit přesné pořadí automatických fallbacků; výchozí pořadí začíná lokální Ollamou;
+- online poskytovatelé se v automatickém režimu nepoužijí, dokud uživatel výslovně nepotvrdí, že obsah konverzace opustí počítač;
+- Raven nikdy automaticky nepřejde na placený model ani neprovede nákup;
+- API klíče zůstávají šifrované Windows DPAPI a nejsou součástí nastavení, logů, instalačního balíčku ani GitHubu;
+- chyby kvóty, dočasné výpadky, opakování a lokální fallback zůstávají pokryté automatickými testy.
+
+## Předchozí sestavení 1.0
 
 ## Hlavní změny
 
@@ -42,4 +53,4 @@
 
 ## Soubor releasu
 
-Pro běžnou instalaci stáhněte jediný soubor `Raven-1.0-Setup.exe` z vydání v1.0. Instalátor umožní vybrat cílovou složku, připraví bezplatné závislosti a na konci zkontroluje povinné soubory i spustitelnost aplikace.
+Pro běžnou instalaci stáhněte jediný soubor `Raven-1.1-Setup.exe` z vydání v1.1. Instalátor umožní vybrat cílovou složku, připraví bezplatné závislosti a na konci zkontroluje povinné soubory i spustitelnost aplikace.

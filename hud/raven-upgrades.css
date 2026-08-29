@@ -236,3 +236,17 @@ body,
 @media (max-width: 1180px) {
   .status-strip { max-width: 100vw; }
 }
+
+.provider-order-row {
+  display: grid;
+  grid-template-columns: 1fr 36px 36px;
+  gap: 6px;
+  align-items: center;
+  margin: 5px 0;
+  padding: 6px 8px;
+  border: 1px solid #393936;
+  border-radius: 6px;
+  background: #1d1d1b;
+}
+.provider-order-row button { min-height: 30px; padding: 0; }
+.provider-status-card small { display: block; margin-top: 5px; color: #aaa; line-height: 1.35; }

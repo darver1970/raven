@@ -242,7 +242,7 @@ if (-not $NoDesktop) {
     Add-Content -LiteralPath $launcherLog -Value "$(Get-Date -Format o) $message`n$($_.ScriptStackTrace)" -Encoding utf8
     try {
         $popup = New-Object -ComObject WScript.Shell
-        $popup.Popup("$message`n`nPodrobnosti: $launcherLog", 0, 'Raven 1.0', 16) | Out-Null
+        $popup.Popup("$message`n`nPodrobnosti: $launcherLog", 0, 'Raven 1.1', 16) | Out-Null
     } catch {}
     throw
 } finally {
