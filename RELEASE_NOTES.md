@@ -22,6 +22,9 @@
 - instalátor připraví tři bezplatné lokální modely `qwen3.5:4b`, `qwen3.5:9b` a `qwen2.5-coder:7b` přímo v instalační složce;
 - vlastní Ollama je svázaná s ověřeným PID, spouštěcím časem a instalačním kořenem; zavření Ravenu ukončí celý její procesový strom, ale nedotkne se cizí Ollamy;
 - NSIS instalace používá zabalený Electron shell a na cílovém počítači znovu nesestavuje desktopovou aplikaci.
+- opraveno rozpoznání instalační cesty končící názvem `Desktop`; nainstalovaná NSIS aplikace se již nezamění za přenosné EXE a neposune kořen projektu o složku výš;
+- přidán spustitelný regresní test pro NSIS cestu na ploše a přenosnou kopii v adresáři `desktop`.
+- při dlouhé kompilaci nativních částí OpenJarvisu instalátor výslovně upozorní, že na pomalejším PC může několik minut pokračovat bez dalšího výpisu.
 
 ## Ověření sestavení
 
@@ -33,6 +36,7 @@
 - čistá instalace do nové složky včetně závislostí, tří modelů a závěrečného ověřovacího souboru;
 - spuštění nainstalovaného `Raven.exe`, načtení HUD, terminál, agentní strom, telemetrie, vytvoření a odstranění souboru přes chat a skutečná lokální odpověď `42`;
 - zavření nainstalované aplikace s výsledkem nula vlastních procesů a nula naslouchajících portů Raven.
+- skutečná instalace a bootstrap v cestě s mezerami a diakritikou a regresní test cíle končícího `Desktop`.
 
 ## Soubor releasu
 

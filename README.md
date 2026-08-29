@@ -8,6 +8,8 @@ Raven 1.0 je lokální desktopový AI pracovní prostor pro 64bitové Windows 10
 2. Spusťte instalátor. Při prvním spuštění se Raven zeptá na jedinou pracovní složku; výchozí je `C:\Raven`. Do zvolené složky uloží zdroje, modely, runtime i data a připraví pouze bezplatné závislosti.
 3. Dokončení první instalace může trvat déle kvůli stažení tří lokálních modelů `qwen3.5:4b`, `qwen3.5:9b` a `qwen2.5-coder:7b`. Potom spusťte zástupce **Raven 1.0** na ploše.
 
+Opravné sestavení podporuje také instalační cesty s mezerami, diakritikou a cílovou složku pojmenovanou `Desktop`. Instalace do kořene systémového disku nebo přímo do společné plochy může vyžadovat potvrzení správce Windows.
+
 Instalace nikdy neaktivuje placené předplatné ani placené API. Volitelný Codex lze spustit jen ručně, pokud k němu uživatel již má vlastní přístup; automatické směrování ho nepoužívá. Windows může při prvním spuštění zobrazit ochranu SmartScreen, protože komunitní sestavení není podepsané placeným certifikátem.
 
 ### Požadavky

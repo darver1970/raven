@@ -37,6 +37,7 @@
     ],
     "files": [
       "main.js",
+      "install-paths.js",
       "preload.js",
       "package.json",
       "node_modules/monaco-editor/**/*"
@@ -60,6 +61,7 @@
           "desktop/raven.ico",
           "desktop/raven-logo.png",
           "desktop-electron/main.js",
+          "desktop-electron/install-paths.js",
           "desktop-electron/preload.js",
           "desktop-electron/package.json",
           "desktop-electron/package-lock.json",

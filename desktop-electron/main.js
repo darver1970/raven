@@ -4,6 +4,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { execFileSync, spawn } = require('node:child_process');
 const { autoUpdater } = require('electron-updater');
+const { resolveExecutableContext } = require('./install-paths');
 
 const WINDOWS_POWERSHELL = path.join(
   process.env.SystemRoot || 'C:\\Windows',
@@ -12,23 +13,20 @@ const WINDOWS_POWERSHELL = path.join(
 const INSTALL_CONFIG = path.join(process.env.LOCALAPPDATA || path.dirname(process.execPath), 'Raven', 'install-path.txt');
 let SAVED_ROOT = '';
 try { SAVED_ROOT = fs.readFileSync(INSTALL_CONFIG, 'utf8').trim(); } catch {}
-const EXECUTABLE_DIRECTORY = path.dirname(process.execPath);
-const IS_NSIS_INSTALL = app.isPackaged
-  && !process.env.PORTABLE_EXECUTABLE_DIR
-  && path.basename(EXECUTABLE_DIRECTORY).toLowerCase() !== 'desktop';
-const SAVED_ROOT_IS_VALID = SAVED_ROOT
-  && path.isAbsolute(SAVED_ROOT)
-  && fs.existsSync(path.join(path.resolve(SAVED_ROOT), 'raven_control.py'));
-const EXECUTABLE_ROOT = IS_NSIS_INSTALL
-  ? EXECUTABLE_DIRECTORY
-  : app.isPackaged && path.basename(EXECUTABLE_DIRECTORY).toLowerCase() === 'desktop'
-    ? path.resolve(EXECUTABLE_DIRECTORY, '..')
-    : 'C:\\Raven';
-const INSTALLED_ROOT = IS_NSIS_INSTALL
-  ? path.resolve(EXECUTABLE_ROOT)
-  : SAVED_ROOT_IS_VALID
-    ? path.resolve(SAVED_ROOT)
-    : path.resolve(EXECUTABLE_ROOT);
+const executableContext = resolveExecutableContext({
+  isPackaged: app.isPackaged,
+  execPath: process.execPath,
+  portableExecutableDir: process.env.PORTABLE_EXECUTABLE_DIR,
+  savedRoot: SAVED_ROOT
+});
+const {
+  executableDirectory: EXECUTABLE_DIRECTORY,
+  executableRoot: EXECUTABLE_ROOT,
+  installedRoot: INSTALLED_ROOT,
+  isNsisInstall: IS_NSIS_INSTALL,
+  isPortableBuild: IS_PORTABLE_BUILD,
+  savedRootIsValid: SAVED_ROOT_IS_VALID
+} = executableContext;
 const INSTALL_MARKER = path.join(INSTALLED_ROOT, '.raven-installing');
 const BUNDLED_PROJECT = app.isPackaged ? path.join(process.resourcesPath, 'raven-project') : '';
 let bootstrapInProgress = false;
@@ -177,8 +175,8 @@ const ROOT = bootstrapInProgress
   ? path.resolve(process.env.RAVEN_HOME)
   : app.isPackaged && fs.existsSync(path.join(INSTALLED_ROOT, 'raven_control.py'))
     ? INSTALLED_ROOT
-    : app.isPackaged && path.basename(path.dirname(process.execPath)).toLowerCase() === 'desktop'
-      ? path.resolve(path.dirname(process.execPath), '..')
+    : app.isPackaged && IS_PORTABLE_BUILD
+      ? EXECUTABLE_ROOT
       : path.resolve(__dirname, '..');
 const RUNTIME = path.join(ROOT, 'runtime');
 const ELECTRON_PROFILE_OVERRIDE = String(process.env.RAVEN_ELECTRON_PROFILE || '').trim();

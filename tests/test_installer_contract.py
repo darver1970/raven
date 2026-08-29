@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 
@@ -13,8 +14,44 @@ def test_packaged_bootstrap_uses_selected_executable_directory() -> None:
     assert "path.dirname(process.execPath)" in main_source
     assert "`-InstallPath ${quotePowerShell(INSTALLED_ROOT)}`" in main_source
     assert "const FIXED_ROOT" not in main_source
-    assert "const IS_NSIS_INSTALL" in main_source
-    assert "SAVED_ROOT_IS_VALID" in main_source
+    assert "isNsisInstall: IS_NSIS_INSTALL" in main_source
+    assert "savedRootIsValid: SAVED_ROOT_IS_VALID" in main_source
+
+
+def test_nsis_path_named_desktop_is_not_misclassified_as_portable() -> None:
+    resolver = ROOT / "desktop-electron" / "install-paths.js"
+    script = r"""
+const { resolveExecutableContext } = require(process.argv[1]);
+const installed = resolveExecutableContext({
+  isPackaged: true,
+  execPath: String.raw`C:\\Users\\Petr\\Desktop\\Raven.exe`,
+  portableExecutableDir: '',
+  savedRoot: String.raw`C:\\old-raven`,
+  existsSync: () => true
+});
+const portable = resolveExecutableContext({
+  isPackaged: true,
+  execPath: String.raw`C:\\projektjarvis\\desktop\\Raven-Desktop.exe`,
+  portableExecutableDir: String.raw`C:\\projektjarvis\\desktop`,
+  savedRoot: '',
+  existsSync: () => false
+});
+process.stdout.write(JSON.stringify({ installed, portable }));
+"""
+    result = subprocess.run(
+        ["node", "-e", script, str(resolver)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    values = json.loads(result.stdout)
+
+    assert values["installed"]["isNsisInstall"] is True
+    assert values["installed"]["isPortableBuild"] is False
+    assert values["installed"]["installedRoot"].lower().endswith(r"users\petr\desktop")
+    assert values["portable"]["isNsisInstall"] is False
+    assert values["portable"]["isPortableBuild"] is True
+    assert values["portable"]["installedRoot"].lower().endswith("projektjarvis")
 
 
 def test_installer_has_persistent_log_and_failure_message() -> None:

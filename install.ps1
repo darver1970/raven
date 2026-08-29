@@ -438,7 +438,7 @@ $openJarvisEnvironmentReady =
 if ($openJarvisEnvironmentReady) {
     Write-Step 'Používám již připravené lokální Python prostředí OpenJarvisu.'
 } else {
-    Write-Step 'Připravuji lokální Python prostředí OpenJarvisu.'
+    Write-Step 'Připravuji lokální Python prostředí OpenJarvisu. Kompilace nativních součástí může na pomalejším PC několik minut pokračovat bez dalšího výpisu; instalační okno nezavírejte.'
     Invoke-NativeChecked -FilePath $uv -Arguments @(
         'sync', '--project', $openJarvisSource, '--python', $compatiblePython,
         '--extra', 'desktop', '--group', 'desktop-native'
