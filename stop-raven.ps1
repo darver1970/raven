@@ -7,6 +7,15 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$cleanupMutex = [Threading.Mutex]::new($false, 'Local\RavenStopV1')
+try {
+    $cleanupLockAcquired = $cleanupMutex.WaitOne(30000)
+} catch [Threading.AbandonedMutexException] {
+    $cleanupLockAcquired = $true
+}
+if (-not $cleanupLockAcquired) {
+    throw 'Jiné ukončování aplikace Raven stále probíhá.'
+}
 $resolvedRoot = [System.IO.Path]::GetFullPath($InstallRoot).TrimEnd('\')
 if (-not (Test-Path -LiteralPath $resolvedRoot -PathType Container)) {
     throw "Instalační složka Raven neexistuje: $resolvedRoot"
@@ -115,12 +124,20 @@ function Get-OwnedOllamaProcess {
         if (-not $processExecutable.Equals($markerExecutable, [System.StringComparison]::OrdinalIgnoreCase)) {
             return $null
         }
-        $recordedStart = [DateTime]::Parse(
-            [string]$marker.started_at_utc,
-            [Globalization.CultureInfo]::InvariantCulture,
-            [Globalization.DateTimeStyles]::RoundtripKind
-        ).ToUniversalTime()
-        $actualStart = ([DateTime]$process.CreationDate).ToUniversalTime()
+        $markerStart = $marker.started_at_utc
+        $recordedStart = if ($markerStart -is [DateTime]) {
+            $markerStart.ToUniversalTime()
+        } else {
+            [DateTimeOffset]::Parse(
+                [string]$markerStart,
+                [Globalization.CultureInfo]::InvariantCulture,
+                [Globalization.DateTimeStyles]::RoundtripKind
+            ).UtcDateTime
+        }
+        # Get-Process uses the same Windows time conversion as the launcher that
+        # wrote the marker. CIM CreationDate can be shifted by the local UTC
+        # offset in PowerShell 7, which made a valid owned process look foreign.
+        $actualStart = (Get-Process -Id $markerPid -ErrorAction Stop).StartTime.ToUniversalTime()
         if ([Math]::Abs(($actualStart - $recordedStart).TotalSeconds) -gt 10) { return $null }
         return $process
     } catch {

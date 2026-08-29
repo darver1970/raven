@@ -58,12 +58,17 @@ function Get-OwnedOllamaProcess {
         if (-not $processExecutable.Equals($markerExecutable, [System.StringComparison]::OrdinalIgnoreCase)) {
             return $null
         }
-        $recordedStart = [DateTime]::Parse(
-            [string]$marker.started_at_utc,
-            [Globalization.CultureInfo]::InvariantCulture,
-            [Globalization.DateTimeStyles]::RoundtripKind
-        ).ToUniversalTime()
-        $actualStart = ([DateTime]$process.CreationDate).ToUniversalTime()
+        $markerStart = $marker.started_at_utc
+        $recordedStart = if ($markerStart -is [DateTime]) {
+            $markerStart.ToUniversalTime()
+        } else {
+            [DateTimeOffset]::Parse(
+                [string]$markerStart,
+                [Globalization.CultureInfo]::InvariantCulture,
+                [Globalization.DateTimeStyles]::RoundtripKind
+            ).UtcDateTime
+        }
+        $actualStart = (Get-Process -Id $markerPid -ErrorAction Stop).StartTime.ToUniversalTime()
         if ([Math]::Abs(($actualStart - $recordedStart).TotalSeconds) -gt 10) { return $null }
         return $process
     } catch {

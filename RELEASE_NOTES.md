@@ -25,6 +25,8 @@
 - opraveno rozpoznání instalační cesty končící názvem `Desktop`; nainstalovaná NSIS aplikace se již nezamění za přenosné EXE a neposune kořen projektu o složku výš;
 - přidán spustitelný regresní test pro NSIS cestu na ploše a přenosnou kopii v adresáři `desktop`.
 - při dlouhé kompilaci nativních částí OpenJarvisu instalátor výslovně upozorní, že na pomalejším PC může několik minut pokračovat bez dalšího výpisu.
+- souběžné požadavky na ukončení jsou serializované, aby při zavření okna nezůstal běžet Ravenem spuštěný proces Ollama.
+- vlastnictví procesu Ollama porovnává čas spuštění stejným Windows API jako launcher; kontrolu již nerozhodí posun místního časového pásma.
 
 ## Ověření sestavení
 

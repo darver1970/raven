@@ -215,6 +215,7 @@ def test_installer_preserves_codex_project_rules() -> None:
 def test_desktop_shutdown_runs_project_scoped_cleanup() -> None:
     main_source = (ROOT / "desktop-electron" / "main.js").read_text(encoding="utf-8")
     installer_source = (ROOT / "install.ps1").read_text(encoding="utf-8-sig")
+    launcher_source = (ROOT / "spustit-raven.ps1").read_text(encoding="utf-8-sig")
     stop_source = (ROOT / "stop-raven.ps1").read_text(encoding="utf-8-sig")
 
     assert "app.on('before-quit', stopRavenServices)" in main_source
@@ -229,6 +230,11 @@ def test_desktop_shutdown_runs_project_scoped_cleanup() -> None:
     assert "taskkill.exe" in stop_source
     assert "ParentProcessId" in stop_source
     assert "excludedProcessIds" in stop_source
+    assert "Local\\RavenStopV1" in stop_source
+    assert "$cleanupMutex.WaitOne(30000)" in stop_source
+    assert "Get-Process -Id $markerPid" in stop_source
+    assert "Get-Process -Id $markerPid" in launcher_source
+    assert "[DateTimeOffset]::Parse" in stop_source
 
 
 def test_launcher_does_not_stop_foreign_ollama() -> None:
