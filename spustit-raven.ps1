@@ -111,6 +111,45 @@ function Wait-RavenPort([int]$Port, [string]$ExpectedCommand, [int]$Seconds) {
     throw "Služba Raven na portu $Port se nespustila do $Seconds sekund."
 }
 
+function Repair-PortablePythonPaths {
+    $pythonPath = Join-Path $root 'src\.venv\Scripts\python.exe'
+    $portablePythonRoot = Join-Path $root 'runtime\python-base'
+    $portableBasePython = Join-Path $portablePythonRoot 'python.exe'
+    $venvConfig = Join-Path $root 'src\.venv\pyvenv.cfg'
+    $sitePackages = Join-Path $root 'src\.venv\Lib\site-packages'
+    $editablePath = Join-Path $sitePackages '_editable_impl_openjarvis.pth'
+    $sourcePath = Join-Path $root 'src\src'
+    if (-not (Test-Path -LiteralPath $pythonPath -PathType Leaf)) {
+        throw 'Python prostředí nebylo nalezeno. Nejdříve spusťte install.ps1.'
+    }
+    if (-not (Test-Path -LiteralPath $portableBasePython -PathType Leaf)) {
+        throw 'Přenosný Python runtime nebyl nalezen. Spusťte opravu instalace pomocí install.ps1.'
+    }
+    if (-not (Test-Path -LiteralPath $venvConfig -PathType Leaf)) {
+        throw 'Konfigurace Python prostředí nebyla nalezena.'
+    }
+    $configText = Get-Content -LiteralPath $venvConfig -Raw -Encoding utf8
+    $repairedConfig = [regex]::Replace($configText, '(?m)^home\s*=.*$', "home = $portablePythonRoot")
+    if ($repairedConfig -ne $configText) {
+        Set-Content -LiteralPath $venvConfig -Value $repairedConfig.TrimEnd() -Encoding utf8
+        Add-Content -LiteralPath $launcherLog -Value "$(Get-Date -Format o) Opravena cesta základního Pythonu: $portablePythonRoot" -Encoding utf8
+    }
+    if (-not (Test-Path -LiteralPath $sitePackages -PathType Container)) {
+        throw 'Balíčky Python prostředí nebyly nalezeny. Nejdříve spusťte install.ps1.'
+    }
+    if (-not (Test-Path -LiteralPath $sourcePath -PathType Container)) {
+        throw 'Zdrojová část OpenJarvisu nebyla nalezena.'
+    }
+    $currentValue = if (Test-Path -LiteralPath $editablePath -PathType Leaf) {
+        (Get-Content -LiteralPath $editablePath -Raw -Encoding utf8).Trim()
+    } else { '' }
+    if (-not $currentValue.Equals($sourcePath, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Set-Content -LiteralPath $editablePath -Value $sourcePath -Encoding utf8
+        Add-Content -LiteralPath $launcherLog -Value "$(Get-Date -Format o) Opravena přenosná Python cesta: $sourcePath" -Encoding utf8
+    }
+    return $pythonPath
+}
+
 try {
     Add-Content -LiteralPath $launcherLog -Value "$(Get-Date -Format o) Raven launcher start" -Encoding utf8
     $env:PATH = "$root\runtime\node;$env:PATH"
@@ -121,6 +160,7 @@ try {
     $env:TEMP = "$root\runtime\temp"
     $env:TMP = "$root\runtime\temp"
     New-Item -ItemType Directory -Path $env:TEMP -Force | Out-Null
+    $pythonPath = Repair-PortablePythonPaths
 
 $ollamaPath = "$root\runtime\ollama\ollama.exe"
 if (-not (Test-Path -LiteralPath $ollamaPath)) {
@@ -141,15 +181,11 @@ if (-not (Test-RavenOllamaPort)) {
     if (-not (Test-RavenOllamaPort)) { throw 'Lokální služba Ollama se nespustila na portu 11434.' }
 }
 Wait-RavenHttp -Uri 'http://127.0.0.1:11434/api/version' -Seconds 10
-if (-not (Test-RavenPort -Port 8000 -ExpectedCommand 'jarvis')) {
-    Start-Process -FilePath "$root\src\.venv\Scripts\jarvis.exe" -ArgumentList "serve", "--host", "127.0.0.1", "--port", "8000" -WorkingDirectory "$root\src" -WindowStyle Hidden
-    Wait-RavenPort -Port 8000 -ExpectedCommand 'jarvis' -Seconds 90
+if (-not (Test-RavenPort -Port 8000 -ExpectedCommand 'openjarvis.cli')) {
+    Start-Process -FilePath $pythonPath -ArgumentList '-m', 'openjarvis.cli', 'serve', '--host', '127.0.0.1', '--port', '8000' -WorkingDirectory "$root\src" -WindowStyle Hidden
+    Wait-RavenPort -Port 8000 -ExpectedCommand 'openjarvis.cli' -Seconds 90
 }
 Wait-RavenHttp -Uri 'http://127.0.0.1:8000/v1/agents/health' -Seconds 30
-$pythonPath = "$root\src\.venv\Scripts\python.exe"
-if (-not (Test-Path -LiteralPath $pythonPath)) {
-    throw "Python prostředí nebylo nalezeno. Nejdříve spusťte install.ps1."
-}
 if (-not (Test-RavenPort -Port 5174 -ExpectedCommand 'http.server')) {
     Start-Process -FilePath $pythonPath -ArgumentList '-m', 'http.server', '5174', '--bind', '127.0.0.1' -WorkingDirectory "$root\hud" -WindowStyle Hidden
     Wait-RavenPort -Port 5174 -ExpectedCommand 'http.server' -Seconds 10

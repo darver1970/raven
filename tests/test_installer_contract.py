@@ -267,3 +267,22 @@ def test_launcher_supports_install_paths_with_spaces() -> None:
     assert "-ArgumentList 'network_monitor.py'" in launcher_source
     assert "$electronArguments += '.'" in launcher_source
     assert "-ArgumentList $electronArguments" in launcher_source
+
+
+def test_launcher_repairs_portable_python_path_without_console_stub() -> None:
+    launcher_source = (ROOT / "spustit-raven.ps1").read_text(encoding="utf-8-sig")
+    assert "Repair-PortablePythonPaths" in launcher_source
+    assert "_editable_impl_openjarvis.pth" in launcher_source
+    assert "runtime\\python-base" in launcher_source
+    assert "pyvenv.cfg" in launcher_source
+    assert "Opravena cesta základního Pythonu" in launcher_source
+    assert "src\\src" in launcher_source
+    assert "Scripts\\jarvis.exe" not in launcher_source
+    assert "'-m', 'openjarvis.cli', 'serve'" in launcher_source
+
+
+def test_installer_bundles_base_python_for_other_computers() -> None:
+    installer_source = (ROOT / "install.ps1").read_text(encoding="utf-8-sig")
+    assert "Copy-PortablePythonRuntime" in installer_source
+    assert "runtime 'python-base'" not in installer_source
+    assert "'python-base'" in installer_source

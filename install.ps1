@@ -226,6 +226,21 @@ function Ensure-CompatiblePython {
     return $python
 }
 
+function Copy-PortablePythonRuntime([string]$SourcePython, [string]$RuntimeDirectory) {
+    $sourceDirectory = Split-Path -Parent $SourcePython
+    $portableDirectory = Join-Path $RuntimeDirectory 'python-base'
+    $portablePython = Join-Path $portableDirectory 'python.exe'
+    if (-not (Test-Path -LiteralPath $portablePython -PathType Leaf)) {
+        Write-Step 'Kopíruji vlastní Python runtime pro přenosné spuštění na jiném počítači.'
+        New-Item -ItemType Directory -Path $portableDirectory -Force | Out-Null
+        Copy-Item -Path (Join-Path $sourceDirectory '*') -Destination $portableDirectory -Recurse -Force
+    }
+    if (-not (Test-Path -LiteralPath $portablePython -PathType Leaf)) {
+        throw 'Vlastní přenosný Python runtime se nepodařilo připravit.'
+    }
+    return $portablePython
+}
+
 function Import-VisualStudioBuildEnvironment {
     $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
     if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) { return $false }
@@ -385,6 +400,7 @@ if (-not $git) {
 
 Write-Step 'Kontroluji kompatibilní Python pro OpenJarvis.'
 $compatiblePython = Ensure-CompatiblePython
+$compatiblePython = Copy-PortablePythonRuntime -SourcePython $compatiblePython -RuntimeDirectory $runtime
 Write-Step 'Kontroluji Microsoft Visual C++ Runtime pro nativní Python komponenty.'
 Ensure-VisualCppRuntime
 Write-Step 'Kontroluji Microsoft C++ Build Tools pro OpenJarvis.'
