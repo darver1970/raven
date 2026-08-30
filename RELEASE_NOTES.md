@@ -1,3 +1,27 @@
+# Raven 1.2 – centrum lokálních schopností
+
+## Novinky 1.2
+
+- nové Centrum schopností sjednocuje správu modelů, výkonu, bezpečnosti, soukromí, MCP, workflow, paměti, promptů a experimentů;
+- Správce modelů čte skutečný stav Ollamy, velikosti modelů a doporučení podle hardwaru a po potvrzení umí model nainstalovat, otestovat nebo odstranit;
+- bezpečný a offline režim jsou vynucené přímo backendem a znemožní odeslat požadavek online;
+- MCP registry vyžadují explicitní oprávnění, nové servery ukládají vypnuté a neukládají jejich tajné proměnné;
+- typovaná paměť podporuje rozsah, expiraci, připnutí a slučování duplicit;
+- znalostní knihovna indexuje přírůstkově a výsledky obsahují citaci souboru a řádku;
+- ochrana proti prompt injection označí a nahradí nedůvěryhodné instrukce před online přenosem;
+- lokální privacy audit ukládá pouze metadata, nikdy obsah zpráv nebo API klíče;
+- export nastavení záměrně vynechává DPAPI klíče, cache a modely;
+- izolované pracovní kopie vynechávají Git, runtime, modely, závislosti a velké soubory;
+- přidány výkonnostní profily, rozpočet kontextu, vysoký kontrast, omezení animací a jednodušší režim;
+- stabilní funkce jsou aktivní, zatímco multimodalita, dokumenty, LAN API a další rizikovější části zůstávají v experimentální laboratoři standardně vypnuté;
+- rozšířená automatická sada ověřuje bezpečnost registrů, export bez tajemství, izolaci, přírůstkový index, citace a celé Electron rozhraní.
+
+## Instalace 1.2
+
+Stáhněte `Raven-1.2-Setup.exe` z vydání v1.2. Pro automatickou aktualizaci musí vydání obsahovat také odpovídající `latest.yml` a blockmapu.
+
+## Předchozí sestavení 1.1
+
 # Raven 1.1 – bezpečný katalog bezplatných AI
 
 ## Novinky 1.1

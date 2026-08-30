@@ -1,5 +1,5 @@
 {
-  "version": "1.1",
+  "version": "1.2",
   "provider_order": ["local", "groq_free", "gemini_free", "cerebras_free", "openrouter_free", "mistral_free", "github_models_free", "cloudflare_free"],
   "fallback_on": ["free_quota_exhausted", "provider_unavailable"],
   "modes": {

@@ -1,14 +1,14 @@
-# Raven 1.1
+# Raven 1.2
 
-Raven 1.1 je lokální desktopový AI pracovní prostor pro 64bitové Windows 10 a Windows 11. Má tmavé textové rozhraní, lokální historii chatů a projektů, přehled agentů, úkolů, telemetrie a procesů. Verze 1.1 přidává bezpečný katalog bezplatných online modelů, nastavitelné fallbacky a výslovnou ochranu soukromí.
+Raven 1.2 je lokální desktopový AI pracovní prostor pro 64bitové Windows 10 a Windows 11. Nové Centrum schopností sjednocuje správu lokálních modelů, výkonové profily, znalosti, typovanou paměť, bezpečné MCP registry, workflow, soukromí, kontext, podporu a experimentální funkce. Stabilní režim zůstává lehký a local-first.
 
 Online AI je volitelná. Automatický router používá pouze lokální Ollamu, dokud uživatel v nastavení nepotvrdí odesílání obsahu online poskytovatelům. Raven nikdy automaticky neaktivuje placený model ani předplatné.
 
 ## Nejjednodušší instalace
 
-1. Na stránce [Releases](https://github.com/darver1970/raven/releases/tag/v1.1) stáhněte pouze `Raven-1.1-Setup.exe` z vydání 1.1.
+1. Na stránce [Releases](https://github.com/darver1970/raven/releases/tag/v1.2) stáhněte pouze `Raven-1.2-Setup.exe` z vydání 1.2.
 2. Spusťte instalátor. Při prvním spuštění se Raven zeptá na jedinou pracovní složku; výchozí je `C:\Raven`. Do zvolené složky uloží zdroje, modely, runtime i data a připraví pouze bezplatné závislosti.
-3. Dokončení první instalace může trvat déle kvůli stažení tří lokálních modelů `qwen3.5:4b`, `qwen3.5:9b` a `qwen2.5-coder:7b`. Potom spusťte zástupce **Raven 1.1** na ploše.
+3. Dokončení první instalace může trvat déle kvůli stažení tří lokálních modelů `qwen3.5:4b`, `qwen3.5:9b` a `qwen2.5-coder:7b`. Potom spusťte zástupce **Raven 1.2** na ploše.
 
 Opravné sestavení podporuje také instalační cesty s mezerami, diakritikou a cílovou složku pojmenovanou `Desktop`. Instalace do kořene systémového disku nebo přímo do společné plochy může vyžadovat potvrzení správce Windows.
 
@@ -31,7 +31,7 @@ Pokud nechcete použít EXE, stáhněte ZIP zdrojového kódu z GitHubu, rozbalt
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -InstallPath C:\Raven
 ```
 
-Instalátor podle potřeby doplní Git, Node.js LTS, Ollamu, Python prostředí, agentní knihovny a desktopovou vrstvu. Hotovou instalaci lze otevřít zástupcem `Raven 1.1` nebo souborem `Raven.exe` ve zvolené instalační složce. Ruční instalace ze zdrojů vytváří také `desktop\Raven-Desktop.exe`.
+Instalátor podle potřeby doplní Git, Node.js LTS, Ollamu, Python prostředí, agentní knihovny a desktopovou vrstvu. Hotovou instalaci lze otevřít zástupcem `Raven 1.2` nebo souborem `Raven.exe` ve zvolené instalační složce. Ruční instalace ze zdrojů vytváří také `desktop\Raven-Desktop.exe`.
 
 ### Aktualizace
 
@@ -39,16 +39,21 @@ Před instalací nové verze zazálohujte vlastní důležitá data. Nové vydá
 
 ## Modely a automatické přepínání
 
-Automatický režim používá toto pořadí:
+Výchozí automatický režim používá local-first pořadí, které lze v nastavení změnit:
 
-1. Gemini Free;
-2. OpenRouter Free;
-3. další nakonfigurované bezplatné zálohy: Groq, Cerebras, Mistral, GitHub Models a volitelně Cloudflare Workers AI;
-4. lokální Ollama.
+1. lokální Ollama;
+2. Groq Free, Gemini Free a Cerebras Free;
+3. OpenRouter Free, Mistral Free, GitHub Models a volitelně Cloudflare Workers AI.
 
 Na další zdroj se přepne při vyčerpání bezplatné kvóty nebo při nedostupnosti služby. API klíče se ukládají šifrovaně přes Windows DPAPI a nejsou součástí repozitáře ani historie chatu. Ručně lze zvolit režim Automaticky, Lokálně, Rychlost, Kvalita, Výzkum nebo Kód.
 
 ## Hlavní části
+
+- Centrum schopností 1.2: přehled nejméně 32 oblastí, skutečný stav hardwaru, bezpečný a offline režim, experimentální laboratoř a přístupnost.
+- Správce modelů: skutečný katalog Ollamy, velikosti modelů, doporučení podle RAM, instalace, odstranění a lokální rychlostní test s potvrzením.
+- Bezpečné registry: MCP servery bez ukládání jejich tajemství, explicitní oprávnění, kontrolované workflow, verzované prompty a typovaná paměť s deduplikací a expirací.
+- Soukromí: lokální audit metadat online přenosů, redakce prompt injection, export nastavení bez DPAPI klíčů a anonymizovaný report podpory.
+- Izolace: omezená pracovní kopie bez `.git`, runtime, modelů, závislostí a uživatelských tajemství; experimentální funkce jsou standardně vypnuté.
 
 - Chat: víceřádkový editor, Enter pro odeslání a Shift+Enter pro nový řádek, lokální historie, kopírování odpovědí a bloků kódu.
 - Projekty: oddělené pracovní kontexty s cestou, Git repozitářem, technologiemi, poznámkami a testovacím příkazem.
@@ -84,19 +89,19 @@ Rozhraní a návrh pracovních postupů vycházejí z veřejně dostupných prin
 - Backend: `raven_control.py`
 - Desktopové okno: `desktop-electron/main.js`, bezpečný most `desktop-electron/preload.js`
 - Rozhraní: `hud/index.html`, `hud/app.css`, `hud/workbench.css`, `hud/hud.js`, `hud/workbench.js`
-- Mozek a agentní runtime: `raven_brain.py`, `agent_runtime.py` a `raven_intelligence.py` (plánování, trvalé kontrolní body, ověřování, Pydantic AI Slim, Browser Use, Crawl4AI, MCP; nejvýše dva těžcí agenti)
+- Mozek a agentní runtime: `raven_brain.py`, `agent_runtime.py`, `raven_intelligence.py` a `raven_next.py` (plánování, checkpointy, znalosti, bezpečnostní registry a Centrum schopností; nejvýše dva těžcí agenti)
 - Výchozí konfigurace: `defaults/`
 - Pravidla pro Codex na každém PC a disku: `AGENTS.md`
 - Lokální běhová data: `runtime/`
 
 Před vydáním se kontroluje syntaxe Pythonu, PowerShellu a JavaScriptu, lokální API, souběh agentů, jednorázová potvrzení, zotavení úloh, načtení skutečného Electron rozhraní, psaní do editoru, historie, telemetrie, skutečný souborový nástroj přes chat, lokální odpověď modelu, čisté ukončení všech vlastních procesů a obsah instalačního EXE. Raven si eviduje přesný proces své Ollamy a při ukončení nesmí zastavit cizí instanci. GitHub se aktualizuje pouze na výslovný pokyn uživatele.
 
-Výsledné soubory jsou `desktop/Raven-Desktop.exe` pro běžné spuštění a `desktop-dist/Raven-1.1-Setup.exe` jako instalační balíček. Instalační EXE obsahuje zdrojovou část Ravenu 1.1 a na čistém podporovaném počítači spustí přípravu bezplatných závislostí.
+Výsledné soubory jsou `desktop/Raven-Desktop.exe` pro běžné spuštění a `desktop-dist/Raven-1.2-Setup.exe` jako instalační balíček. Instalační EXE obsahuje zdrojovou část Ravenu 1.2 a na čistém podporovaném počítači spustí přípravu bezplatných závislostí.
 
 ## Kredity
 
-Instalátor Raven 1.1 stahuje oficiální OpenJarvis jako samostatnou běhovou závislost; jeho zdrojový kód není součástí tohoto repozitáře ani instalačního EXE. Další samostatné open-source knihovny jsou uvedeny v souboru [`NOTICE`](NOTICE). Rozhraní a pracovní postupy byly navrženy také s přihlédnutím k veřejným principům projektů Open WebUI, OpenCode, Vane, Meetily, agenticSeek a Claw Code. Jejich zdrojový kód není součástí Ravenu 1.1 a projekt si nenárokuje jejich značky ani podporu.
+Instalátor Raven 1.2 stahuje oficiální OpenJarvis jako samostatnou běhovou závislost; jeho zdrojový kód není součástí tohoto repozitáře ani instalačního EXE. Další samostatné open-source knihovny jsou uvedeny v souboru [`NOTICE`](NOTICE). Rozhraní a pracovní postupy byly navrženy také s přihlédnutím k veřejným principům projektů Open WebUI, Jan, AnythingLLM, OpenHands, Browser Use, Mem0, Dify, OpenCode, Vane, Meetily, agenticSeek a Claw Code. Jejich zdrojový kód není automaticky kopírován do Ravenu a projekt si nenárokuje jejich značky ani podporu.
 
 ## Licence
 
-Raven 1.1 je vydán pod Apache License 2.0. Podrobné kredity a licence integrovaných nebo volitelných komponent jsou v souboru `NOTICE`.
+Raven 1.2 je vydán pod Apache License 2.0. Podrobné kredity a licence integrovaných nebo volitelných komponent jsou v souboru `NOTICE`.

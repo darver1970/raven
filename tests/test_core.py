@@ -19,8 +19,8 @@ from raven_intelligence import detect_local_file_action, execute_file_action
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def test_version_is_one_one() -> None:
-    assert (ROOT / "VERSION").read_text(encoding="utf-8").strip() in {"1.1", "v1.1"}
+def test_version_is_one_two() -> None:
+    assert (ROOT / "VERSION").read_text(encoding="utf-8").strip() in {"1.2", "v1.2"}
 
 
 def test_system_prompt_forbids_invented_provider_state() -> None:
@@ -56,6 +56,18 @@ def test_online_fallback_requires_acknowledgement(monkeypatch: pytest.MonkeyPatc
         "online_provider_notice_acknowledged": False,
         "provider_order": ["groq_free", "local"],
     })
+    assert raven_control.automatic_provider_order() == ["local"]
+
+
+def test_v12_offline_mode_forces_local_router(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(raven_control, "load_cloud_secrets", lambda: {"gemini_free": "encrypted"})
+    monkeypatch.setattr(raven_control, "provider_circuit_open", lambda _: False)
+    monkeypatch.setattr(raven_control, "load_settings", lambda: {
+        "online_provider_notice_acknowledged": True,
+        "provider_order": ["gemini_free", "local"],
+    })
+    monkeypatch.setattr(raven_control, "load_next_settings", lambda: {"offline_mode": True, "safe_mode": False})
+
     assert raven_control.automatic_provider_order() == ["local"]
 
 

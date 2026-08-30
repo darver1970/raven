@@ -35,3 +35,9 @@ Tento soubor platí pro každou kopii projektu Raven 1.0 bez ohledu na písmeno 
 4. Po změně spusť odpovídající jednotkové, integrační, syntaktické a desktopové testy. Před vydáním sestav a ověř také skutečný instalační EXE.
 5. Neoznačuj práci jako hotovou bez konkrétního důkazu. Uveď, co přesně bylo ověřeno, co nebylo možné ověřit a proč.
 6. Před uploadem aktualizuj README, RELEASE_NOTES a NOTICE, ověř platnost LICENSE a zkontroluj, že instalátor obsahuje aktuální zdroje.
+
+## Povinný obsah flash disku Raven
+
+1. Flash disk musí vždy obsahovat stejnou nejnovější verzi Raven jako hlavní kopie na PC.
+2. Musí na něm být současně instalační EXE, kompletní přenositelná a přímo spustitelná kopie Raven se všemi potřebnými součástmi, aktuální pracovní log a zástupce nebo spouštěč nezávislý na písmenu jednotky.
+3. Před bezpečným odpojením ověř instalátor i přímé spuštění z flash disku. Nenechávej na něm starší verze, osamocený instalátor ani neúplnou kopii aplikace.

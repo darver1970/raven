@@ -44,6 +44,37 @@ from raven_intelligence import (
     save_library_settings,
     search_library,
 )
+from raven_next import (
+    benchmark_model,
+    cleanup_preview,
+    context_estimate,
+    create_isolated_workspace,
+    delete_mcp_server,
+    export_portable_settings,
+    feature_overview,
+    inspect_untrusted_content,
+    inspect_import_bundle,
+    load_settings as load_next_settings,
+    mcp_servers,
+    manage_ollama_model,
+    memories as next_memories,
+    ollama_models,
+    privacy_events,
+    prompt_library,
+    record_privacy_event,
+    run_workflow,
+    save_mcp_server,
+    save_memory as save_next_memory,
+    save_prompt,
+    save_settings as save_next_settings,
+    save_workflow,
+    skills_catalog,
+    storage_summary,
+    support_report,
+    system_profile,
+    test_mcp_server,
+    workflows,
+)
 
 
 ROOT = Path(__file__).resolve().parent
@@ -162,7 +193,7 @@ BUILTIN_AGENTS = [
     {"id": "model-router", "name": "Model Router", "group": "Core", "role": "Gemini, OpenRouter, další free zdroje a lokální fallback", "tools": ["provider-health", "free-quota", "fallback"], "dependencies": ["raven"], "model": "local"},
 ]
 
-RAVEN_SYSTEM_PROMPT = """Jsi centrální textový asistent Raven 1.1. Odpovídej česky, pokud uživatel nepoužije jiný jazyk.
+RAVEN_SYSTEM_PROMPT = """Jsi centrální textový asistent Raven 1.2. Odpovídej česky, pokud uživatel nepoužije jiný jazyk.
 Buď přesný, praktický a stručný. Nevymýšlej si fakta, dokončené akce ani výsledky nástrojů.
 Nikdy netvrď, že jsi vytvořil, upravil, smazal, spustil, nainstaloval nebo nahrál něco, pokud Raven nemá ověřený výsledek příslušného nástroje.
 Když nástroj nebyl použit nebo jeho výsledek nebyl ověřen, popiš pouze návrh či omezení a nesděluj akci jako dokončenou.
@@ -1015,6 +1046,9 @@ def automatic_provider_order(intent: TaskIntent | str = TaskIntent.CHAT) -> list
         and (provider == "local" or not provider_circuit_open(provider))
     ]
     settings = load_settings()
+    next_settings = load_next_settings()
+    if next_settings.get("safe_mode") or next_settings.get("offline_mode"):
+        return ["local"] if "local" in available else []
     if not settings.get("online_provider_notice_acknowledged"):
         return ["local"] if "local" in available else []
     configured = settings.get("provider_order", [])
@@ -1157,6 +1191,9 @@ def provider_request(
     """Odešle explicitně zvolený online chat a vrátí pouze odpověď modelu."""
     if provider == "local":
         return local_model_request(messages, model)
+    next_settings = load_next_settings()
+    if next_settings.get("safe_mode") or next_settings.get("offline_mode"):
+        raise ValueError("Online poskytovatelé jsou vypnutí bezpečným nebo offline režimem Raven 1.2.")
     if provider == "codex_plus":
         if api_key is not None:
             raise ValueError("Codex přes ChatGPT Plus nepoužívá API klíč.")
@@ -1168,9 +1205,23 @@ def provider_request(
         api_key = unprotect_secret(encrypted)
     else:
         api_key = validate_cloud_secret(api_key)
-    sanitized = [{"role": str(item.get("role", "user")), "content": str(item.get("content", ""))[:5000]} for item in messages[-16:] if isinstance(item, dict) and str(item.get("content", "")).strip()]
+    sanitized = []
+    injection_matches = 0
+    for item in messages[-16:]:
+        if not isinstance(item, dict) or not str(item.get("content", "")).strip():
+            continue
+        inspected = inspect_untrusted_content(str(item.get("content", ""))[:5000]) if str(item.get("role", "user")) != "system" else {"sanitized": str(item.get("content", ""))[:5000], "matches": []}
+        injection_matches += len(inspected.get("matches", []))
+        sanitized.append({"role": str(item.get("role", "user")), "content": str(inspected["sanitized"])})
     if not sanitized:
         raise ValueError("Online dotaz neobsahuje žádnou zprávu.")
+    record_privacy_event({
+        "destination": provider,
+        "purpose": "model_request",
+        "online": True,
+        "fields": ["messages", "model", *( ["prompt_injection_redacted"] if injection_matches else [])],
+        "redacted": True,
+    })
     configured_model = str(PROVIDERS[provider].get("model", ""))
     selected_model = configured_model
     if provider == "local":
@@ -1189,7 +1240,7 @@ def provider_request(
                 data = json.loads(response.read().decode("utf-8"))
             answer = "".join(str(part.get("text", "")) for part in data["candidates"][0]["content"]["parts"])
         elif provider in OPENAI_COMPATIBLE_PROVIDERS:
-            request = urllib.request.Request(OPENAI_COMPATIBLE_PROVIDERS[provider], data=json.dumps({"model": selected_model, "messages": sanitized, "max_tokens": 2000}, ensure_ascii=False).encode("utf-8"), headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}", "X-Title": "Raven 1.1 free-only"}, method="POST")
+            request = urllib.request.Request(OPENAI_COMPATIBLE_PROVIDERS[provider], data=json.dumps({"model": selected_model, "messages": sanitized, "max_tokens": 2000}, ensure_ascii=False).encode("utf-8"), headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}", "X-Title": "Raven 1.2 free-only"}, method="POST")
             with urllib.request.urlopen(request, timeout=45) as response:
                 data = json.loads(response.read().decode("utf-8"))
             answer = str(data["choices"][0]["message"]["content"])
@@ -1234,7 +1285,7 @@ def provider_request(
 def load_project_memory() -> dict[str, Any]:
     """Načte sdílené poznatky o projektu se stabilní strukturou."""
     memory = load_document(PROJECT_MEMORY_PATH, "entries")
-    memory.setdefault("project", "Raven 1.1")
+    memory.setdefault("project", "Raven 1.2")
     memory.setdefault("summary", "Lokální RAVEN pro Windows.")
     entries = memory.get("entries", [])
     memory["entries"] = [entry for entry in entries if isinstance(entry, dict)][-120:]
@@ -1310,8 +1361,8 @@ def clean_obsolete_memory() -> None:
         cleaned = [entry for entry in memory["entries"] if not any(token in f"{entry.get('title','')} {entry.get('summary','')}".lower() for token in obsolete)]
         if len(cleaned) != len(memory["entries"]):
             memory["entries"] = cleaned
-            memory["project"] = "Raven 1.1"
-            memory["summary"] = f"Lokální textový Raven 1.1 pro Windows uložený v {ROOT}."
+            memory["project"] = "Raven 1.2"
+            memory["summary"] = f"Lokální textový Raven 1.2 pro Windows uložený v {ROOT}."
             save_document(PROJECT_MEMORY_PATH, memory)
 
 
@@ -2278,6 +2329,28 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(load_document(SCHEDULES_PATH, "schedules"))
         elif request_path == "/logs":
             self.send_json(load_recent_logs())
+        elif request_path == "/v12/overview":
+            self.send_json(feature_overview())
+        elif request_path == "/v12/system-profile":
+            self.send_json(system_profile())
+        elif request_path == "/v12/models":
+            self.send_json(ollama_models())
+        elif request_path == "/v12/mcp":
+            self.send_json(mcp_servers())
+        elif request_path == "/v12/workflows":
+            self.send_json(workflows())
+        elif request_path == "/v12/prompts":
+            self.send_json(prompt_library())
+        elif request_path == "/v12/memory":
+            self.send_json(next_memories(str(query.get("q", [""])[0])))
+        elif request_path == "/v12/privacy":
+            self.send_json(privacy_events())
+        elif request_path == "/v12/skills":
+            self.send_json(skills_catalog())
+        elif request_path == "/v12/storage":
+            self.send_json(storage_summary())
+        elif request_path == "/v12/cleanup-preview":
+            self.send_json(cleanup_preview())
         else:
             self.send_json({"error": "Nenalezeno"}, 404)
 
@@ -2297,6 +2370,66 @@ class Handler(BaseHTTPRequestHandler):
                 save_rules(rules)
                 logging.info("Odstraněno pravidlo: %s", removed[:120])
                 self.send_json({"rules": rules, "removed": removed})
+                return
+            if self.path == "/v12/settings":
+                self.send_json(save_next_settings(data))
+                return
+            if self.path == "/v12/models/manage":
+                require_permission(data, "správa lokálního modelu")
+                if data.get("confirmed") is not True:
+                    raise ValueError("Instalace nebo odstranění modelu vyžaduje potvrzení.")
+                self.send_json(manage_ollama_model(data))
+                return
+            if self.path == "/v12/models/benchmark":
+                self.send_json(benchmark_model(data))
+                return
+            if self.path == "/v12/mcp/save":
+                require_permission(data, "uložení MCP serveru")
+                self.send_json(save_mcp_server(data))
+                return
+            if self.path == "/v12/mcp/test":
+                self.send_json(test_mcp_server(str(data.get("id", ""))))
+                return
+            if self.path == "/v12/mcp/delete":
+                require_permission(data, "odstranění MCP serveru")
+                self.send_json(delete_mcp_server(str(data.get("id", ""))))
+                return
+            if self.path == "/v12/workflows/save":
+                require_permission(data, "uložení workflow")
+                self.send_json(save_workflow(data))
+                return
+            if self.path == "/v12/workflows/run":
+                require_permission(data, "spuštění workflow")
+                self.send_json(run_workflow(str(data.get("id", "")), data.get("simulate") is not False))
+                return
+            if self.path == "/v12/prompts/save":
+                self.send_json(save_prompt(data))
+                return
+            if self.path == "/v12/memory/save":
+                if load_next_settings().get("memory_enabled") is not True:
+                    raise ValueError("Paměť Raven 1.2 je vypnutá.")
+                self.send_json(save_next_memory(data))
+                return
+            if self.path == "/v12/context/estimate":
+                self.send_json(context_estimate(data))
+                return
+            if self.path == "/v12/privacy/event":
+                self.send_json(record_privacy_event(data))
+                return
+            if self.path == "/v12/support-report":
+                require_permission(data, "vytvoření anonymizovaného reportu")
+                self.send_json(support_report(run_diagnostics(data.get("full") is True)))
+                return
+            if self.path == "/v12/export-settings":
+                require_permission(data, "export přenositelného nastavení")
+                self.send_json(export_portable_settings())
+                return
+            if self.path == "/v12/sandbox/create":
+                require_permission(data, "vytvoření izolované pracovní kopie")
+                self.send_json(create_isolated_workspace(data))
+                return
+            if self.path == "/v12/import/inspect":
+                self.send_json(inspect_import_bundle(data.get("path")))
                 return
             if self.path == "/processes/terminate":
                 require_permission(data, "ukončení procesu")

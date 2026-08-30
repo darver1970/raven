@@ -38,8 +38,8 @@ with sync_playwright() as playwright:
     hud.wait_for_timeout(1200)
     hud.wait_for_function("state.providers.length > 0 && state.settings.provider_order.length > 0", timeout=15000)
     hud.evaluate("document.querySelectorAll('dialog[open]').forEach(dialog => dialog.close())")
-    assert hud.title() == "Raven 1.1"
-    assert hud.locator(".app-menu-brand").text_content().strip() == "Raven 1.1"
+    assert hud.title() == "Raven 1.2"
+    assert hud.locator(".app-menu-brand").text_content().strip() == "Raven 1.2"
     assert hud.locator(".app-menu").count() == 3
     assert hud.evaluate("Boolean(window.ravenDesktop)") is True
     assert hud.locator("#composer-access").input_value() == "full"
@@ -67,7 +67,7 @@ with sync_playwright() as playwright:
         "path => window.ravenDesktop.readFile(`${path}\\\\VERSION`)",
         root_path,
     )
-    assert version_file["content"].strip() in {"1.1", "v1.1"}
+    assert version_file["content"].strip() in {"1.2", "v1.2"}
     terminal_state = hud.evaluate("window.ravenDesktop.terminal.create({})")
     terminal_id = terminal_state["terminals"][-1]["id"]
     hud.evaluate(
@@ -117,6 +117,15 @@ with sync_playwright() as playwright:
     assert hud.locator(".provider-status-card").count() >= 9
     assert hud.locator("#codex-status").count() == 1
     assert "Codex" not in hud.locator("#key-provider").text_content()
+    hud.locator('[data-view="capabilities"]').first.click()
+    hud.wait_for_function("document.querySelectorAll('.capability-card').length >= 32", timeout=10000)
+    assert hud.locator("#view-capabilities.active").count() == 1
+    assert hud.locator(".capability-summary article").count() == 6
+    assert hud.locator(".capability-card").count() >= 32
+    assert hud.locator("#v12-settings-form [name='safe_mode']").count() == 1
+    assert hud.locator("#v12-settings-form [name='high_contrast']").count() == 1
+    assert hud.locator("#mcp-quick-form").count() == 1
+    assert hud.locator("#create-review-workflow").count() == 1
     assert abs(hud.evaluate("window.ravenDesktop.zoom(1.25)") - 1.25) < 0.01
     assert abs(hud.evaluate("window.ravenDesktop.zoom(1)") - 1) < 0.01
     hud.locator('[data-view="chat"]').first.click()

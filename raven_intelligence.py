@@ -114,10 +114,11 @@ def rebuild_library_index() -> dict[str, Any]:
     limit = int(settings["max_file_mb"]) * 1024 * 1024
     LIBRARY_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(LIBRARY_DB_PATH)
-    indexed = skipped = errors = 0
+    indexed = skipped = errors = removed = unchanged = 0
     try:
         connection.execute("CREATE VIRTUAL TABLE IF NOT EXISTS documents USING fts5(path UNINDEXED, modified UNINDEXED, content)")
-        connection.execute("DELETE FROM documents")
+        existing = {str(row[0]): str(row[1]) for row in connection.execute("SELECT path, modified FROM documents").fetchall()}
+        seen: set[str] = set()
         for root_text in settings["locations"]:
             root = Path(root_text)
             iterator = root.rglob("*") if settings["include_subfolders"] else root.glob("*")
@@ -134,21 +135,31 @@ def rebuild_library_index() -> dict[str, Any]:
                     if stat.st_size > limit:
                         skipped += 1
                         continue
+                    resolved_text = str(resolved)
+                    seen.add(resolved_text)
+                    modified = str(stat.st_mtime_ns)
+                    if existing.get(resolved_text) == modified:
+                        unchanged += 1
+                        continue
                     content = redact_secrets(resolved.read_text(encoding="utf-8", errors="replace"))
+                    connection.execute("DELETE FROM documents WHERE path = ?", (resolved_text,))
                     connection.execute(
                         "INSERT INTO documents(path, modified, content) VALUES (?, ?, ?)",
-                        (str(resolved), str(stat.st_mtime_ns), content),
+                        (resolved_text, modified, content),
                     )
                     indexed += 1
                 except (OSError, UnicodeError):
                     errors += 1
+        for missing in set(existing) - seen:
+            connection.execute("DELETE FROM documents WHERE path = ?", (missing,))
+            removed += 1
         connection.commit()
         settings["last_indexed_at"] = datetime.now().isoformat(timespec="seconds")
         settings["last_error"] = "" if not errors else f"{errors} souboru neslo precist"
         _atomic_json(LIBRARY_SETTINGS_PATH, settings)
     finally:
         connection.close()
-    return {"indexed": indexed, "skipped": skipped, "errors": errors, "settings": settings}
+    return {"indexed": indexed, "unchanged": unchanged, "removed": removed, "skipped": skipped, "errors": errors, "settings": settings}
 
 
 def _fts_query(text: str) -> str:
@@ -168,7 +179,7 @@ def search_library(query: str, limit: int = 8) -> dict[str, Any]:
     connection = sqlite3.connect(LIBRARY_DB_PATH)
     try:
         rows = connection.execute(
-            "SELECT path, snippet(documents, 2, '[', ']', ' … ', 42), bm25(documents) "
+            "SELECT path, snippet(documents, 2, '[', ']', ' … ', 42), bm25(documents), content "
             "FROM documents WHERE documents MATCH ? ORDER BY bm25(documents) LIMIT ?",
             (expression, max(1, min(20, int(limit)))),
         ).fetchall()
@@ -176,7 +187,16 @@ def search_library(query: str, limit: int = 8) -> dict[str, Any]:
         rows = []
     finally:
         connection.close()
-    return {"query": text, "results": [{"path": row[0], "snippet": row[1], "score": row[2]} for row in rows]}
+    results = []
+    query_tokens = re.findall(r"[\wá-žÁ-Ž]{3,}", text, flags=re.UNICODE)
+    for row in rows:
+        content = str(row[3] or "")
+        positions = [content.lower().find(token.lower()) for token in query_tokens]
+        positions = [position for position in positions if position >= 0]
+        position = min(positions) if positions else 0
+        line = content.count("\n", 0, position) + 1
+        results.append({"path": row[0], "snippet": row[1], "score": row[2], "line": line, "citation": f"{row[0]}:{line}"})
+    return {"query": text, "results": results}
 
 
 def known_desktop() -> Path:

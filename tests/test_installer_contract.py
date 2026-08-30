@@ -100,7 +100,7 @@ def test_installer_verifies_and_launches_completed_installation() -> None:
     installer_source = (ROOT / "install.ps1").read_text(encoding="utf-8-sig")
 
     marker_removal = installer_source.index("Remove-Item -LiteralPath $installMarker")
-    application_launch = installer_source.index("Write-Step 'Spouštím Raven 1.1.'")
+    application_launch = installer_source.index("Write-Step 'Spouštím Raven 1.2.'")
     assert marker_removal < application_launch
     assert "spustit-raven.ps1" in installer_source[application_launch:]
 
@@ -201,6 +201,14 @@ def test_installer_copies_and_validates_brain_module() -> None:
     assert "'raven_brain.py'" in installer_source
     assert "(Join-Path $installRoot 'raven_brain.py')" in installer_source
     assert '"raven_brain.py"' in installer_source
+
+
+def test_installer_copies_and_validates_v12_backend() -> None:
+    installer_source = (ROOT / "install.ps1").read_text(encoding="utf-8-sig")
+
+    assert "'raven_intelligence.py', 'raven_next.py'" in installer_source
+    assert "(Join-Path $installRoot 'raven_next.py')" in installer_source
+    assert '"raven_next.py"' in installer_source
 
 
 def test_installer_preserves_codex_project_rules() -> None:

@@ -1,7 +1,7 @@
 {
-  "name": "Raven 1.1",
+  "name": "Raven 1.2",
   "short_name": "Raven",
-  "start_url": "/?hud_version=v1.1",
+  "start_url": "/?hud_version=v1.2",
   "display": "standalone",
   "background_color": "#171717",
   "theme_color": "#171717",

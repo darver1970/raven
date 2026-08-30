@@ -116,7 +116,7 @@ if (IS_NSIS_INSTALL && !process.env.RAVEN_HOME && fs.existsSync(path.join(BUNDLE
       fs.appendFileSync(bootstrapLog, `${new Date().toISOString()} launcher_error=${error.stack || error}\n`, 'utf8');
       app.whenReady().then(() => dialog.showErrorBox(
         'Raven je nainstalován, ale nelze jej spustit',
-        `Použijte zástupce Raven 1.1 na ploše. Podrobnosti jsou v ${bootstrapLog}`
+        `Použijte zástupce Raven 1.2 na ploše. Podrobnosti jsou v ${bootstrapLog}`
       )).finally(() => app.exit(1));
     });
   });
@@ -213,7 +213,7 @@ if (!bootstrapInProgress) {
   fs.mkdirSync(ARTIFACTS, { recursive: true });
 }
 if (!bootstrapInProgress) app.setPath('userData', PROFILE);
-app.setName('Raven 1.1');
+app.setName('Raven 1.2');
 app.setAppUserModelId('cz.raven.desktop');
 const MAIN_LOG = path.join(RUNTIME, 'electron-main.log');
 const writeLog = value => { try { fs.appendFileSync(MAIN_LOG, `${new Date().toISOString()} ${value}\n`, 'utf8'); } catch {} };
@@ -838,13 +838,13 @@ function installHandlers() {
 }
 
 function createAuxWindow(display = '') {
-  const win = new BrowserWindow({ width: 1450, height: 900, backgroundColor: '#171715', title: 'Raven 1.1', icon: path.join(ROOT, 'desktop', 'raven.ico'), autoHideMenuBar: true, titleBarStyle: 'hidden', titleBarOverlay: { color: '#191917', symbolColor: '#bdbdb7', height: 30 }, webPreferences: { preload: path.join(__dirname, 'preload.js'), sandbox: true, contextIsolation: true } });
+  const win = new BrowserWindow({ width: 1450, height: 900, backgroundColor: '#171715', title: 'Raven 1.2', icon: path.join(ROOT, 'desktop', 'raven.ico'), autoHideMenuBar: true, titleBarStyle: 'hidden', titleBarOverlay: { color: '#191917', symbolColor: '#bdbdb7', height: 30 }, webPreferences: { preload: path.join(__dirname, 'preload.js'), sandbox: true, contextIsolation: true } });
   win.loadURL(display ? `${HUD_URL}&display=${encodeURIComponent(display)}` : HUD_URL);
   return win;
 }
 
 function createMainWindow() {
-  mainWindow = new BrowserWindow({ width: 1600, height: 980, minWidth: 1100, minHeight: 700, backgroundColor: '#171715', title: 'Raven 1.1', icon: path.join(ROOT, 'desktop', 'raven.ico'), autoHideMenuBar: true, titleBarStyle: 'hidden', titleBarOverlay: { color: '#191917', symbolColor: '#bdbdb7', height: 30 }, webPreferences: { preload: path.join(__dirname, 'preload.js'), sandbox: true, contextIsolation: true, nodeIntegration: false } });
+  mainWindow = new BrowserWindow({ width: 1600, height: 980, minWidth: 1100, minHeight: 700, backgroundColor: '#171715', title: 'Raven 1.2', icon: path.join(ROOT, 'desktop', 'raven.ico'), autoHideMenuBar: true, titleBarStyle: 'hidden', titleBarOverlay: { color: '#191917', symbolColor: '#bdbdb7', height: 30 }, webPreferences: { preload: path.join(__dirname, 'preload.js'), sandbox: true, contextIsolation: true, nodeIntegration: false } });
   mainWindow.webContents.on('render-process-gone', (_event, details) => writeLog(`renderer gone reason=${details.reason} code=${details.exitCode}`));
   mainWindow.webContents.on('did-fail-load', (_event, code, description, url) => writeLog(`load failed code=${code} description=${description} url=${url}`));
   mainWindow.webContents.on('console-message', (_event, level, message, line, source) => { if (level >= 2) writeLog(`renderer console level=${level} ${message} at ${source}:${line}`); });

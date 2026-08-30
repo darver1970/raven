@@ -1,6 +1,6 @@
 "use strict";
 
-const CACHE_NAME = "raven-v1.1-cache-1";
+const CACHE_NAME = "raven-v1.2-cache-1";
 const ASSETS = ["/", "/index.html", "/app.css", "/process-groups.css", "/composer-access.css", "/workbench.css", "/raven-upgrades.css", "/hud.js", "/workbench.js", "/manifest.json"];
 
 self.addEventListener("install", event => {
