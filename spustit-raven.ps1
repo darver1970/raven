@@ -115,6 +115,14 @@ function Repair-PortablePythonPaths {
     $pythonPath = Join-Path $root 'src\.venv\Scripts\python.exe'
     $portablePythonRoot = Join-Path $root 'runtime\python-base'
     $portableBasePython = Join-Path $portablePythonRoot 'python.exe'
+    if (-not (Test-Path -LiteralPath $portableBasePython -PathType Leaf)) {
+        $managedPython = Get-ChildItem -LiteralPath (Join-Path $root 'runtime\python') -Filter 'python.exe' -File -Recurse -ErrorAction SilentlyContinue |
+            Select-Object -First 1 -ExpandProperty FullName
+        if ($managedPython) {
+            $portableBasePython = $managedPython
+            $portablePythonRoot = Split-Path -Parent $managedPython
+        }
+    }
     $venvConfig = Join-Path $root 'src\.venv\pyvenv.cfg'
     $sitePackages = Join-Path $root 'src\.venv\Lib\site-packages'
     $editablePath = Join-Path $sitePackages '_editable_impl_openjarvis.pth'

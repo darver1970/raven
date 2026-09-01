@@ -274,6 +274,8 @@ def test_launcher_repairs_portable_python_path_without_console_stub() -> None:
     assert "Repair-PortablePythonPaths" in launcher_source
     assert "_editable_impl_openjarvis.pth" in launcher_source
     assert "runtime\\python-base" in launcher_source
+    assert "runtime\\python" in launcher_source
+    assert "Get-ChildItem" in launcher_source
     assert "pyvenv.cfg" in launcher_source
     assert "Opravena cesta základního Pythonu" in launcher_source
     assert "src\\src" in launcher_source
