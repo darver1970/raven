@@ -1,41 +1,62 @@
 # Raven 1.2
 
+## Aktualizace Cortex (4. září 2026)
+
+Chat zapisuje cíle, kontrolní body a důkazy do lokální SQLite databáze.
+Výběr dostupného lokálního modelu zohledňuje schopnosti, RAM a výsledky testů.
+Centrum nabízí pětiúlohový benchmark, zpětnou vazbu a export výslovně schválených
+příkladů. Paměť lze vypnout; prošlé zkušenosti se nepoužijí. Export je nutné ručně
+zkontrolovat na soukromé údaje; automatická redakce není záruka.
+
+Aktuální pracovní distribuce je kompletní přenosná složka Raven s vlastním
+běhovým prostředím. Spouštěč používá relativní cesty, takže kopie není vázaná na
+písmeno disku. Instalační EXE se nevytváří ani neupravuje, dokud si jej uživatel
+výslovně nevyžádá.
+
+Čistou portable kopii nebo bezpečnou aktualizaci existující kopie připravuje
+`prepare-portable.ps1`. Program a modely se překryjí, ale cílové chaty, API klíče,
+projekty, cookies, paměť a další osobní data zůstanou oddělená. Cizí DPAPI klíč
+zkopírovaný z jiného Windows účtu Raven ignoruje a nezobrazuje jako funkční.
+
+Trénování vah LoRA/QLoRA je odložené. Ukládání zkušeností není trénování vah.
+Skóre benchmarku hodnotí pouze uvedené krátké úlohy, nikoli obecnou inteligenci.
+Plný autonomní vykonavatel plánů, univerzální sandbox a automatický rollback mozku
+nejsou dokončené funkce tohoto sestavení. Záznam plánu není důkaz jeho provedení.
+
 Raven 1.2 je lokální desktopový AI pracovní prostor pro 64bitové Windows 10 a Windows 11. Nové Centrum schopností sjednocuje správu lokálních modelů, výkonové profily, znalosti, typovanou paměť, bezpečné MCP registry, workflow, soukromí, kontext, podporu a experimentální funkce. Stabilní režim zůstává lehký a local-first.
 
 Online AI je volitelná. Automatický router používá pouze lokální Ollamu, dokud uživatel v nastavení nepotvrdí odesílání obsahu online poskytovatelům. Raven nikdy automaticky neaktivuje placený model ani předplatné.
 
-## Nejjednodušší instalace
+## Nejjednodušší spuštění
 
-1. Na stránce [Releases](https://github.com/darver1970/raven/releases/tag/v1.2) stáhněte pouze `Raven-1.2-Setup.exe` z vydání 1.2.
-2. Spusťte instalátor. Při prvním spuštění se Raven zeptá na jedinou pracovní složku; výchozí je `C:\Raven`. Do zvolené složky uloží zdroje, modely, runtime i data a připraví pouze bezplatné závislosti.
-3. Dokončení první instalace může trvat déle kvůli stažení tří lokálních modelů `qwen3.5:4b`, `qwen3.5:9b` a `qwen2.5-coder:7b`. Potom spusťte zástupce **Raven 1.2** na ploše.
+1. Připojte připravený portable disk nebo zkopírujte celou složku Raven.
+2. Vedle složky spusťte `Raven Portable.exe`; grafický spouštěč si kořen odvodí ze svého aktuálního umístění a není vázaný na písmeno disku.
+3. Nepřesouvejte jednotlivé soubory mimo portable celek. Python, Node/Electron, Ollama, modely a runtime musí zůstat v domluveném rozložení.
 
-Opravné sestavení podporuje také instalační cesty s mezerami, diakritikou a cílovou složku pojmenovanou `Desktop`. Instalace do kořene systémového disku nebo přímo do společné plochy může vyžadovat potvrzení správce Windows.
-
-Instalace nikdy neaktivuje placené předplatné ani placené API. Volitelný Codex lze spustit jen ručně, pokud k němu uživatel již má vlastní přístup; automatické směrování ho nepoužívá. Windows může při prvním spuštění zobrazit ochranu SmartScreen, protože komunitní sestavení není podepsané placeným certifikátem.
+Raven nikdy neaktivuje placené předplatné ani placené API. Volitelný Codex lze spustit jen ručně, pokud k němu uživatel již má vlastní přístup; automatické směrování ho nepoužívá.
 
 ### Požadavky
 
 - 64bitové Windows 10 nebo Windows 11;
 - alespoň 24 GB volného místa;
-- internet při první instalaci;
-- Windows Package Manager (`winget`), který je běžnou součástí aktuálních Windows;
-- Microsoft Visual C++ Runtime 2015–2022 x64 pro nativní Python komponenty; instalátor jej v případě potřeby doplní přes `winget`;
+- připravená kompletní portable distribuce obsahující vlastní Python, Node/Electron, Ollamu a modely;
+- internet je potřeba pouze pro volitelné online poskytovatele a aktualizace;
+- Microsoft Visual C++ Runtime 2015–2022 x64 pro nativní Python komponenty;
 - pro lokální AI je doporučeno nejméně 16 GB RAM, základní cloudový režim může fungovat i na slabším PC.
 
-### Ruční instalace ze zdrojů
+### Vývojová příprava ze zdrojů
 
-Pokud nechcete použít EXE, stáhněte ZIP zdrojového kódu z GitHubu, rozbalte jej a v dané složce spusťte:
+Zdrojový repozitář neobsahuje modely ani kompletní portable runtime. Pro vývoj lze po stažení zdrojů spustit:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -InstallPath C:\Raven
 ```
 
-Instalátor podle potřeby doplní Git, Node.js LTS, Ollamu, Python prostředí, agentní knihovny a desktopovou vrstvu. Hotovou instalaci lze otevřít zástupcem `Raven 1.2` nebo souborem `Raven.exe` ve zvolené instalační složce. Ruční instalace ze zdrojů vytváří také `desktop\Raven-Desktop.exe`.
+Skript připraví vývojové závislosti a desktopovou vrstvu. Výchozí uživatelskou distribucí je kompletní portable složka; instalační EXE není součástí vydání 1.2.
 
 ### Aktualizace
 
-Před instalací nové verze zazálohujte vlastní důležitá data. Nové vydání stáhněte pouze z oficiálního GitHub repozitáře. API klíče a lokální historie jsou v `runtime/`, který se do GitHubu nikdy nenahrává.
+Portable Raven kontroluje nejnovější veřejné GitHub Release. Stahuje pouze `raven-portable-update.json` a jím popsaný archiv, kontroluje původ, velikost, SHA-256 archivu i jednotlivých souborů a při instalaci zachová vlastní `runtime`, chaty, klíče, projekty, paměť i modely. API klíče a lokální historie se do GitHubu nikdy nenahrávají.
 
 ## Modely a automatické přepínání
 
@@ -55,10 +76,11 @@ Na další zdroj se přepne při vyčerpání bezplatné kvóty nebo při nedost
 - Soukromí: lokální audit metadat online přenosů, redakce prompt injection, export nastavení bez DPAPI klíčů a anonymizovaný report podpory.
 - Izolace: omezená pracovní kopie bez `.git`, runtime, modelů, závislostí a uživatelských tajemství; experimentální funkce jsou standardně vypnuté.
 
-- Chat: víceřádkový editor, Enter pro odeslání a Shift+Enter pro nový řádek, lokální historie, kopírování odpovědí a bloků kódu.
-- Projekty: oddělené pracovní kontexty s cestou, Git repozitářem, technologiemi, poznámkami a testovacím příkazem.
+- Chat: víceřádkový editor, Enter pro odeslání a Shift+Enter pro nový řádek, lokální historie, kopírování odpovědí a bloků kódu. Vlastní zprávu lze upravit a odpověď znovu vytvořit z opravené historie. Během probíhající práce lze připnout, upravit nebo zrušit navazující usměrnění. 👍/👎 je trvalá zpětná vazba ke konkrétní odpovědi a změna hodnocení starý záznam nahradí.
+- Projekty: oddělené pracovní kontexty s cestou, Git repozitářem, technologiemi, poznámkami a testovacím příkazem. Dialog lze zavřít i s prázdným názvem a každý projekt včetně aktivního lze odstranit ze seznamu bez smazání jeho souborů.
 - Agenti: větve Core, Planning, Research, Browser, Coding, Testing, Files, Memory, Security a System; výchozí Analytik s lokálním Qwen 3.5 9B, přidávání vlastních agentů, závislosti, průběh, živé stavy a samostatné okno.
-- Systém: stabilní telemetrie bez problikávání, živé grafy CPU/RAM/GPU/disku/sítě, teploty, příkon, ventilátory, upozornění, nejzatíženější procesy a samostatný bar zaplnění každého disku. Procesy jsou seskupené jako ve Správci úloh a lze je filtrovat a řadit podle komponent.
+- Systém: stabilní telemetrie bez problikávání, živé grafy CPU/RAM/GPU/disku/sítě, teploty, příkon, ventilátory, upozornění, nejzatíženější procesy a samostatný bar zaplnění každého disku. CPU, RAM, disky, síť a procesy fungují přes nativní Windows/psutil i bez administrátorských senzorů; teploty zůstávají samostatně volitelné. Procesy jsou seskupené jako ve Správci úloh a lze je filtrovat a řadit podle komponent.
+- Ovládání počítače: seznam a aktivace oken, snímání plochy, dostupný strom Windows UI Automation a po potvrzení myš a klávesnice. Sekvence je svázaná s cílovým oknem, kontroluje souřadnice, pořizuje důkaz před/po a zapisuje audit bez obsahu psaného textu. Chráněná okna jsou blokovaná a k dispozici je nouzové zastavení.
 - Úkoly: lokální historie požadavků, použitého poskytovatele a výsledku.
 - Paměť: Memory Manager a lokální Project Indexer se SQLite FTS5, projektové poznatky a cílené mazání.
 - Pracovní panel: skutečné webové karty Electron WebContentsView, trvalé přihlášení, procházení celého počítače (disky, zpět, vpřed a nahoru), soubory v Monaco editoru, výstupy, Git změny, logy, paměť a artefakty. Šířka se mění myší a ukládá.
@@ -94,13 +116,15 @@ Rozhraní a návrh pracovních postupů vycházejí z veřejně dostupných prin
 - Pravidla pro Codex na každém PC a disku: `AGENTS.md`
 - Lokální běhová data: `runtime/`
 
-Před vydáním se kontroluje syntaxe Pythonu, PowerShellu a JavaScriptu, lokální API, souběh agentů, jednorázová potvrzení, zotavení úloh, načtení skutečného Electron rozhraní, psaní do editoru, historie, telemetrie, skutečný souborový nástroj přes chat, lokální odpověď modelu, čisté ukončení všech vlastních procesů a obsah instalačního EXE. Raven si eviduje přesný proces své Ollamy a při ukončení nesmí zastavit cizí instanci. GitHub se aktualizuje pouze na výslovný pokyn uživatele.
+Před vydáním se kontroluje syntaxe Pythonu, PowerShellu a JavaScriptu, lokální API, souběh agentů, jednorázová potvrzení, zotavení úloh, načtení skutečného Electron rozhraní, psaní do editoru, historie, telemetrie, skutečný souborový nástroj přes chat, lokální odpověď modelu a čisté ukončení všech vlastních procesů. Raven si eviduje přesný proces své Ollamy a při ukončení nesmí zastavit cizí instanci. GitHub se aktualizuje pouze na výslovný pokyn uživatele.
 
-Výsledné soubory jsou `desktop/Raven-Desktop.exe` pro běžné spuštění a `desktop-dist/Raven-1.2-Setup.exe` jako instalační balíček. Instalační EXE obsahuje zdrojovou část Ravenu 1.2 a na čistém podporovaném počítači spustí přípravu bezplatných závislostí.
+Aktuální lokální ověření Raven 1.2 ze dne 12. září 2026 zahrnuje 231 úspěšných automatických testů a pět záměrně přeskočených volitelných živých scénářů. Samostatně prošel živý lokální AI planner, celé HTTP → Cortex → ovládání Windows → ověření → audit, rozšířený Electron smoke test a ostrý start z C: i z hlavní portable flash. Finální flash proces běžel přímo ze stabilní cesty `Raven-1.2\desktop\Raven-Desktop.exe` a měl viditelné reagující okno.
+
+Výsledkem je přímý `desktop/Raven-Desktop.exe` uvnitř kompletní portable složky a kořenový grafický spouštěč `Raven Portable.exe`. Pro autoupdate release obsahuje `raven-portable-update.json` a odpovídající ověřený ZIP. Instalační EXE se nevytváří, dokud o něj uživatel výslovně nepožádá.
 
 ## Kredity
 
-Instalátor Raven 1.2 stahuje oficiální OpenJarvis jako samostatnou běhovou závislost; jeho zdrojový kód není součástí tohoto repozitáře ani instalačního EXE. Další samostatné open-source knihovny jsou uvedeny v souboru [`NOTICE`](NOTICE). Rozhraní a pracovní postupy byly navrženy také s přihlédnutím k veřejným principům projektů Open WebUI, Jan, AnythingLLM, OpenHands, Browser Use, Mem0, Dify, OpenCode, Vane, Meetily, agenticSeek a Claw Code. Jejich zdrojový kód není automaticky kopírován do Ravenu a projekt si nenárokuje jejich značky ani podporu.
+Raven používá OpenJarvis jako samostatnou běhovou závislost; jeho zdrojový kód není součástí tohoto repozitáře. Další samostatné open-source knihovny jsou uvedeny v souboru [`NOTICE`](NOTICE). Rozhraní a pracovní postupy byly navrženy také s přihlédnutím k veřejným principům projektů Open WebUI, Jan, AnythingLLM, OpenHands, Browser Use, Mem0, Dify, OpenCode, Vane, Meetily, agenticSeek a Claw Code. Jejich zdrojový kód není automaticky kopírován do Ravenu a projekt si nenárokuje jejich značky ani podporu.
 
 ## Licence
 

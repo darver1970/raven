@@ -72,7 +72,8 @@ function Copy-RavenFiles([string]$From, [string]$To) {
     $fileNames = @(
         '.gitignore', 'AGENTS.md', 'LICENSE', 'NOTICE', 'README.md', 'RELEASE_NOTES.md', 'VERSION', 'install.ps1', 'spustit-raven.ps1', 'stop-raven.ps1',
         'hardware_monitor.py', 'telemetry_extensions.py', 'raven_control.py', 'network_monitor.py',
-        'agent_runtime.py', 'raven_brain.py', 'raven_intelligence.py', 'raven_next.py'
+        'agent_runtime.py', 'raven_brain.py', 'raven_intelligence.py', 'raven_next.py',
+        'raven_cortex.py', 'raven_learning.py', 'raven_evals.py'
     )
     foreach ($name in $fileNames) {
         Copy-Item -LiteralPath (Join-Path $From $name) -Destination (Join-Path $To $name) -Force
@@ -744,6 +745,9 @@ $requiredFiles = @(
     (Join-Path $installRoot 'raven_brain.py'),
     (Join-Path $installRoot 'raven_intelligence.py'),
     (Join-Path $installRoot 'raven_next.py'),
+    (Join-Path $installRoot 'raven_cortex.py'),
+    (Join-Path $installRoot 'raven_learning.py'),
+    (Join-Path $installRoot 'raven_evals.py'),
     (Join-Path $installRoot 'agent_runtime.py'),
     (Join-Path $installRoot 'spustit-raven.ps1'),
     (Join-Path $installRoot 'stop-raven.ps1'),
@@ -780,6 +784,9 @@ for name in (
     "raven_control.py",
     "raven_intelligence.py",
     "raven_next.py",
+    "raven_cortex.py",
+    "raven_learning.py",
+    "raven_evals.py",
     "telemetry_extensions.py",
 ):
     py_compile.compile(str(root / name), doraise=True)

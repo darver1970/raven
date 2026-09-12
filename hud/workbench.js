@@ -51,7 +51,7 @@ function renderLiveEvent(event) {
   clearTimeout(liveWorkHideTimer);
   liveWorkHideTimer = null;
   const order = ["received", "analysis", "plan", "context", "execute", "edit", "test", "review", "done"];
-  const target = order.indexOf(event.step);
+  const target = order.indexOf(event.step === "needs_verification" ? "review" : event.step);
   $$("#task-progress span").forEach((node, index) => {
     node.classList.toggle("active", index === target);
     node.classList.toggle("done", target >= 0 && index < target);
@@ -79,6 +79,7 @@ function renderWorkLog() {
   const values = state.liveEvents || [];
   if (!values.length) return;
   const labels = {received:"Požadavek přijat",analysis:"Analyzuji zadání",plan:"Připravuji plán",context:"Hledám souvislosti",execute:"Provádím akci",edit:"Upravuji soubory",test:"Ověřuji výsledek",review:"Kontroluji práci",done:"Úkol dokončen",error:"Chyba"};
+  labels.needs_verification = "Vyžaduje další ověření";
   const section = document.createElement("section");
   section.className = "live-work-log";
   section.innerHTML = `<header><span></span><b>Průběh práce</b><small>${values.length} kroků</small></header><div>${values.map(item => `<article class="${item.status === "error" ? "error" : item.status === "completed" ? "completed" : "working"}"><i></i><span><b>${escapeHtml(labels[item.step] || item.step)}</b><small>${escapeHtml(item.agent || "Raven")}${item.tool ? ` · ${escapeHtml(item.tool)}` : ""}${item.model ? ` · ${escapeHtml(item.model)}` : ""}</small><p>${escapeHtml(item.error || item.result || "Pracuji…")}</p></span></article>`).join("")}</div>`;
@@ -132,12 +133,13 @@ renderSettings = function() {
   const first = $("#settings-form .settings-card");
   if (first) first.insertAdjacentHTML("beforeend", '<p class="free-only-note">Automatický router používá pouze bezplatné kvóty a lokální model. Placené API, automatické nákupy, Grok a xAI jsou zakázané.</p>');
   const actions = $("#settings-form .settings-actions");
-  if (actions) actions.insertAdjacentHTML("beforebegin", '<section class="settings-card"><h2>Aktualizace</h2><p id="update-status">Zjišťuji stav nainstalované verze…</p><div class="settings-buttons"><button id="check-update" type="button">Zkontrolovat GitHub Releases</button><button id="install-update" type="button" disabled>Instalovat a restartovat</button></div></section>');
+  if (actions) actions.insertAdjacentHTML("beforebegin", '<section class="settings-card"><h2>Aktualizace</h2><p id="update-status">Zjišťuji stav portable verze…</p><div class="settings-buttons"><button id="check-update" type="button">Zkontrolovat GitHub Releases</button><button id="install-update" type="button" disabled>Aktualizovat a restartovat</button><button id="rollback-update" type="button" disabled>Vrátit předchozí verzi</button></div></section>');
   if (actions) actions.insertAdjacentHTML("beforebegin", '<section class="settings-card"><h2>Synchronizace počítač / flashdisk / GitHub</h2><p id="sync-status">Porovnávám zdrojové soubory, Git a SHA-256…</p><div class="settings-buttons"><button id="select-portable-root" type="button">Vybrat přenosnou kopii</button><button id="check-sync" type="button">Porovnat včetně GitHubu</button></div><small>Raven zde nic automaticky nepřepisuje; při rozdílu vyžaduje volbu směru a potvrzení.</small></section>');
-  const showUpdate = value => { const label=$("#update-status"), install=$("#install-update"); if(label)label.textContent=value?.message||"Stav aktualizace není dostupný."; if(install)install.disabled=value?.status!=="ready"; };
+  const showUpdate = value => { const label=$("#update-status"), install=$("#install-update"), rollback=$("#rollback-update"); if(label)label.textContent=value?.message||"Stav aktualizace není dostupný."; if(install)install.disabled=value?.status!=="ready"; if(rollback)rollback.disabled=!value?.rollbackAvailable; };
   desktop?.updater?.status().then(showUpdate).catch(error=>showUpdate({message:error.message}));
   $("#check-update")?.addEventListener("click", async()=>showUpdate(await desktop.updater.check()));
   $("#install-update")?.addEventListener("click", async()=>{if(await confirmAction("Nainstalovat staženou aktualizaci a restartovat Raven?"))await desktop.updater.install();});
+  $("#rollback-update")?.addEventListener("click", async()=>{if(await confirmAction("Vrátit předchozí portable verzi a restartovat Raven?"))await desktop.updater.rollback();});
   const showSync=value=>{const label=$("#sync-status");if(!label)return;const local=value?.local||{},portable=value?.portable||{};label.textContent=`${value?.recommendation||"Stav není dostupný."} · PC ${local.source_files||0} souborů/${String(local.manifest_sha256||"").slice(0,8)||"—"} · přenosná kopie ${portable.source_files||0} souborů/${String(portable.manifest_sha256||"").slice(0,8)||"—"}${value?.github_head?` · GitHub ${value.github_head.slice(0,8)}`:""}`;};
   get("/sync/status").then(showSync).catch(error=>showSync({recommendation:error.message}));
   $("#select-portable-root")?.addEventListener("click",async()=>{const selected=await desktop?.openFolder();if(selected)showSync(await post("/sync/settings",{portable_root:selected}));});
@@ -389,7 +391,7 @@ if (desktop) {
   desktop.browser.list().then(value => { browserState = value; renderWorkspace(); });
   desktop.onTerminalData?.(appendTerminalData);
   desktop.onTerminalExit?.(value => { const terminal = terminalState.terminals.find(item => item.id === value.id); if (terminal) { terminal.running = false; terminal.exitCode = value.exitCode; } const host = document.querySelector('.terminal-shell')?.closest('.workspace-content'); if (host) renderTerminal(host); });
-  desktop.updater?.onStatus(value => { const label=$("#update-status"), install=$("#install-update"); if(label)label.textContent=value?.message||"Stav aktualizace není dostupný."; if(install)install.disabled=value?.status!=="ready"; });
+  desktop.updater?.onStatus(value => { const label=$("#update-status"), install=$("#install-update"), rollback=$("#rollback-update"); if(label)label.textContent=value?.message||"Stav aktualizace není dostupný."; if(install)install.disabled=value?.status!=="ready"; if(rollback)rollback.disabled=!value?.rollbackAvailable; });
   new ResizeObserver(syncBrowserBounds).observe($("#app-shell"));
 }
 setupWorkspaceResize();
@@ -506,6 +508,11 @@ function openCommandPalette() {
 $("#open-command-palette").onclick = openCommandPalette;
 $("#command-palette-search").oninput = event => renderCommandPalette(event.target.value);
 $("#command-palette-search").onkeydown = async event => {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    $("#command-palette-dialog").close("cancel");
+    return;
+  }
   if (event.key !== "Enter") return;
   event.preventDefault();
   const command = $("#command-palette-results")._commands?.[0];

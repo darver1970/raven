@@ -1,11 +1,89 @@
 from __future__ import annotations
 
 import json
+import ast
+import shutil
 import subprocess
+from unittest.mock import patch
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_local_chat_uses_direct_bounded_ollama_request() -> None:
+    import raven_control
+
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *_): return False
+        def read(self): return b'{"message":{"content":"42"}}'
+
+    captured = {}
+    def fake_open(request, timeout):
+        captured.update(url=request.full_url, body=json.loads(request.data), timeout=timeout)
+        return Response()
+
+    with patch('raven_control.urllib.request.urlopen', fake_open):
+        assert raven_control.local_model_request([{'role': 'user', 'content': '17 + 25'}], 'qwen3.5:4b') == '42'
+    assert captured['url'] == 'http://127.0.0.1:11434/api/chat'
+    assert captured['body']['think'] is False
+    assert captured['body']['options']['num_ctx'] == 4096
+    assert captured['timeout'] == 300
+
+
+def test_launcher_prefers_all_portable_command_dependencies() -> None:
+    launcher = (ROOT / 'spustit-raven.ps1').read_text(encoding='utf-8-sig')
+    for relative in ('runtime\\node', 'runtime\\ollama', 'runtime\\git\\cmd', 'runtime\\git\\bin'):
+        assert relative in launcher
+    control = (ROOT / 'raven_control.py').read_text(encoding='utf-8-sig')
+    assert 'ROOT / "runtime" / "node" / "node.exe"' in control
+
+
+def test_stopper_recognizes_python_openjarvis_backend() -> None:
+    source = (ROOT / "stop-raven.ps1").read_text(encoding="utf-8-sig")
+    assert r"-m\s+openjarvis\.cli\s+serve" in source
+    assert "Test-PathInsideRoot" in source
+
+
+def test_stopper_defaults_to_its_own_project_root(tmp_path: Path) -> None:
+    stopper = tmp_path / "stop-raven.ps1"
+    shutil.copy2(ROOT / "stop-raven.ps1", stopper)
+
+    result = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(stopper),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=45,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert (tmp_path / "runtime" / "logs" / "stop-raven.log").is_file()
+
+
+def test_installer_includes_all_local_backend_imports() -> None:
+    installer = (ROOT / "install.ps1").read_text(encoding="utf-8-sig")
+    tree = ast.parse((ROOT / "raven_control.py").read_text(encoding="utf-8-sig"))
+    # Instalační větev je na výslovný pokyn uživatele zmrazená. Nové moduly
+    # portable produktu se ověřují v extraResources a portable validaci níže.
+    portable_only = {"computer_control.py", "raven_builder.py"}
+    for item in ast.walk(tree):
+        if isinstance(item, ast.ImportFrom) and item.module:
+            name = item.module + ".py"
+            if (ROOT / name).is_file() and name not in portable_only:
+                assert installer.count(name) >= 3, f"Missing copy/validation for {name}"
+    package = json.loads((ROOT / "desktop-electron" / "package.json").read_text(encoding="utf-8"))
+    filters = package["build"]["extraResources"][0]["filter"]
+    assert "*.py" in filters
+    assert (ROOT / "computer_control.py").is_file()
 
 
 def test_packaged_bootstrap_uses_selected_executable_directory() -> None:
@@ -33,8 +111,8 @@ const portable = resolveExecutableContext({
   isPackaged: true,
   execPath: String.raw`C:\\projektjarvis\\desktop\\Raven-Desktop.exe`,
   portableExecutableDir: String.raw`C:\\projektjarvis\\desktop`,
-  savedRoot: '',
-  existsSync: () => false
+  savedRoot: String.raw`C:\\old-raven`,
+  existsSync: () => true
 });
 process.stdout.write(JSON.stringify({ installed, portable }));
 """
@@ -70,6 +148,12 @@ def test_bootstrap_waits_for_confirmed_installer_process() -> None:
     assert "child.once('error'" in main_source
     assert "installer_process_error" in main_source
     assert "-Verb RunAs" in main_source
+    assert "while (-not $installerProcess.HasExited)" in main_source
+    assert "-ArgumentList $installerArguments -Wait" not in main_source
+    assert "process.env.RAVEN_INSTALL_NONINTERACTIVE === '1'" in main_source
+    assert "'-EncodedCommand', encodedInstallerInvocation" in main_source
+    assert "delete WINDOWS_POWERSHELL_ENV.PSModulePath" in main_source
+    assert "env: WINDOWS_POWERSHELL_ENV" in main_source
     assert "installer_process_finished" in main_source
     assert "if (!bootstrapInProgress && !launcherDelegationInProgress)" in main_source
 

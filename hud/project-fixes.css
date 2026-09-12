@@ -1,0 +1,47 @@
+.project-entry {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 27px;
+  align-items: center;
+}
+.project-entry > .project-delete {
+  display: grid;
+  place-items: center;
+  height: 27px;
+  padding: 0;
+  color: #8d6c6c;
+  font-size: 14px;
+}
+.project-entry > .project-delete:hover {
+  background: #432a2a;
+  color: #ffc0c0;
+}
+.project-entry > [data-project] { min-width: 0; }
+
+.message-meta button.feedback-selected {
+  border-radius: 5px;
+  background: #294248;
+  color: #b9f5ff;
+}
+
+.steering-bar {
+  position: absolute;
+  z-index: 3;
+  right: max(24px, calc((100% - 850px) / 2));
+  bottom: 151px;
+  left: max(24px, calc((100% - 850px) / 2));
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+  padding: 9px 11px;
+  border: 1px solid #3c5d63;
+  border-radius: 9px;
+  background: #1d292b;
+  box-shadow: 0 8px 24px #0008;
+}
+.steering-bar.hidden { display: none; }
+.steering-bar div { min-width: 0; }
+.steering-bar b { display: block; color: #a8e5ee; font-size: 10px; }
+.steering-bar span { display: block; overflow: hidden; color: #d7d7d2; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.steering-bar button { padding: 5px 8px; }

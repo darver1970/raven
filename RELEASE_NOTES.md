@@ -1,5 +1,33 @@
 # Raven 1.2 – centrum lokálních schopností
 
+## Finální portable opravy — 12. září 2026
+
+- Produkční ovládání počítače je napojené na Cortex a dokončení vyžaduje ověřený důkaz; UI Automation používá stabilní COM vlákno.
+- Telemetrie bez správce poskytuje skutečné CPU, RAM, procesové GPU, disky a procesy; nedostupné teploty se nevymýšlejí.
+- Opraveny dialogy Projekt, Agent a Paměť, úpravy uživatelských zpráv, trvalé 👍/👎, steering probíhající práce a klávesa Escape v paletě příkazů.
+- Opraveno desktopové balení: portable složka používá přímý proces `desktop/Raven-Desktop.exe`, nikoli vnořený samorozbalovací obal.
+- Automatické testy bez nepoužívaného instalátoru: `231 passed, 5 skipped`; rozšířený Electron smoke test a ostrý start z C: i flash prošly.
+- Aktualizace stahuje podepsaný obsahem manifestovaný portable overlay a zachovává runtime, chaty, API klíče, projekty, paměť a modely.
+
+## Aktuální portable opravy — 5. září 2026
+
+- Přidáno cílené ovládání Windows: snímky obrazovky, seznam a aktivace oken, UI Automation, myš, klávesnice, audit před/po, ochrana citlivých oken a nouzové zastavení.
+- Základní telemetrie CPU, RAM, disků, sítě a procesů funguje i bez LibreHardwareMonitoru; nedostupnost teplotních senzorů už nevypne celý přehled.
+- Opraven dialog nového projektu a přidáno odstranění libovolného projektu ze seznamu bez mazání jeho souborů na disku.
+- Uživatelské zprávy lze upravit a odpověď znovu vytvořit; během práce lze připnout, upravit nebo zrušit navazující usměrnění.
+- 👍/👎 se trvale váže ke konkrétní odpovědi a změna hodnocení nahrazuje předchozí záznam.
+- Přidán `prepare-portable.ps1`: čistá kopie nepřenáší chaty, klíče, projekty, cookies ani osobní databáze; aktualizace zachová vlastní data cílové portable kopie. Cizí DPAPI klíče už nejsou hlášeny jako nastavené.
+- Ověření: 164 testů prošlo, 3 volitelné živé testy přeskočeny; živé ovládání okna 7/7 i živé plánování lokálním modelem prošlo; Electron smoke a portable end-to-end prošly.
+- Instalační EXE nebylo v tomto kroku sestaveno, upraveno ani vydáno. Výchozí distribucí zůstává kompletní portable složka.
+
+## Cortex — pracovní aktualizace 2026-09-04
+
+- Opraven převod textové důvěry kontrolora v novém HTTP chatu.
+- Přidány lokální zkušenosti, zpětná vazba, export schválených dat a měření kontraktů odpovědí.
+- Doplněny nové moduly do instalačního kopírování i kontroly.
+- Opraveno ukončování backendu spuštěného přes `python -m openjarvis.cli serve`.
+- Trénink vah je odložený. Plná autonomní obnova a rollback zůstávají nedokončené.
+
 ## Novinky 1.2
 
 - nové Centrum schopností sjednocuje správu modelů, výkonu, bezpečnosti, soukromí, MCP, workflow, paměti, promptů a experimentů;
@@ -16,9 +44,20 @@
 - stabilní funkce jsou aktivní, zatímco multimodalita, dokumenty, LAN API a další rizikovější části zůstávají v experimentální laboratoři standardně vypnuté;
 - rozšířená automatická sada ověřuje bezpečnost registrů, export bez tajemství, izolaci, přírůstkový index, citace a celé Electron rozhraní.
 
-## Instalace 1.2
+## Portable distribuce 1.2
 
-Stáhněte `Raven-1.2-Setup.exe` z vydání v1.2. Pro automatickou aktualizaci musí vydání obsahovat také odpovídající `latest.yml` a blockmapu.
+Výchozí distribucí je kompletní portable složka s kořenovým `Raven Portable.exe`. GitHub release poskytuje ověřený programový overlay `Raven-Portable-Update-v1.2.0.zip` a manifest `raven-portable-update.json` pro vestavěný autoupdate. Instalační EXE není součástí tohoto vydání.
+
+## Ověření portable balíku 1.2
+
+- 231 automatických testů prošlo a pět volitelných živých testů bylo záměrně přeskočeno;
+- produkční kontrola npm nenašla žádnou známou zranitelnost;
+- portable HUD, terminál a souborový agent prošly skutečným testem vytvoření, přečtení a odstranění souboru;
+- aktualizace zachovává celý uživatelský `runtime` a odmítá archiv s neplatnou cestou, velikostí nebo kontrolním součtem;
+- přenosná kopie prošla z `C:` i z flashdisku, opravila si změněné písmeno Python cest a po ukončení nezanechala vlastní proces ani port;
+- lokální model na PC i flashdisku odpověděl na kontrolní úlohu `42` a kontrolor výsledek přijal;
+- instalace modelů byla v opakovaném čistém QA běhu přeskočena, protože stejné lokální modely a jejich kontrolní součty byly ověřeny v přenosné kopii;
+- čistý instalační test proběhl v izolované složce tohoto Windows počítače, nikoli v samostatném virtuálním počítači.
 
 ## Předchozí sestavení 1.1
 

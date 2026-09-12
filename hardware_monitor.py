@@ -355,7 +355,17 @@ def snapshot() -> dict[str, Any]:
             "online": False, "disabled": True, "message": "TELEMETRIE VYPNUTA",
             "cpu": {}, "gpu": {}, "ram": {}, "performance": {}, "temperatures": [], "disks": [], "processes": [], "system_usage": {},
         }
-    sensors = fetch_sensors() if features.get("hardware_sensors", True) else []
+    sensors: list[dict[str, Any]] = []
+    sensor_online = False
+    sensor_error = ""
+    if features.get("hardware_sensors", True):
+        try:
+            sensors = fetch_sensors()
+            sensor_online = True
+        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as error:
+            # LibreHardwareMonitor je rozšíření pro teploty/napětí. Jeho výpadek
+            # nesmí shodit nativní Windows/psutil telemetrii portable verze.
+            sensor_error = str(error)[:300]
     cpu_temp = choose(sensors, ("cpu", "package", "tdie", "core"), ("temperature",))
     gpu_temp = choose(sensors, ("gpu", "radeon", "nvidia", "geforce"), ("temperature",))
     cpu_load = choose(sensors, ("cpu", "total"), ("load",))
@@ -387,17 +397,29 @@ def snapshot() -> dict[str, Any]:
         system_usage["network_percent"] = round(network_utilization, 1)
     disks = native_disks() if features.get("hardware_sensors", True) else []
     processes = native_processes(settings)
+    memory = psutil.virtual_memory()
+    cpu_load_value = cpu_load["value"] if cpu_load else system_usage.get("cpu_percent")
+    ram_load_value = ram_load["value"] if ram_load else system_usage.get("memory_percent")
+    process_gpu_load = min(100.0, sum(float(item.get("gpu_percent") or 0) for item in processes))
+    gpu_load_value = gpu_load["value"] if gpu_load else round(process_gpu_load, 1)
+    if performance["ram_used_gb"] is None:
+        performance["ram_used_gb"] = round((memory.total - memory.available) / (1024 ** 3), 2)
+    if performance["ram_available_gb"] is None:
+        performance["ram_available_gb"] = round(memory.available / (1024 ** 3), 2)
     extended = collect_extended(
         features, sensors, processes, system_usage, disks,
-        gpu_load["value"] if gpu_load else None,
+        gpu_load_value,
     )
     return {
         "updated_at": datetime.now(timezone.utc).isoformat(),
-        "source": "Libre Hardware Monitor / localhost",
+        "source": "Libre Hardware Monitor + Windows" if sensor_online else "Windows / psutil",
         "online": True,
-        "cpu": {"temperature": cpu_temp and cpu_temp["value"], "load": cpu_load and cpu_load["value"]},
-        "gpu": {"temperature": gpu_temp and gpu_temp["value"], "load": gpu_load and gpu_load["value"]},
-        "ram": {"load": ram_load and ram_load["value"]},
+        "sensor_online": sensor_online,
+        "sensor_message": "Rozšířené teplotní senzory jsou připojené." if sensor_online else "Rozšířené teploty nejsou dostupné; základní telemetrie je plně aktivní.",
+        "sensor_error": sensor_error,
+        "cpu": {"temperature": cpu_temp and cpu_temp["value"], "load": cpu_load_value},
+        "gpu": {"temperature": gpu_temp and gpu_temp["value"], "load": gpu_load_value},
+        "ram": {"load": ram_load_value},
         "performance": performance,
         "temperatures": temperatures[:20],
         "disks": disks,
@@ -417,9 +439,10 @@ def main() -> None:
             logging.exception("Sběrač telemetrie pokračuje po chybě modulu: %s", error)
             write_status({
                 "updated_at": datetime.now(timezone.utc).isoformat(),
-                "source": "Libre Hardware Monitor / localhost",
+                "source": "Windows / psutil · obnovení po chybě",
                 "online": False,
-                "message": "ČEKÁM NA SENZORY",
+                "sensor_online": False,
+                "message": "TELEMETRIE SE OBNOVUJE",
                 "cpu": {}, "gpu": {}, "ram": {}, "performance": {}, "temperatures": [],
                 "disks": native_disks(), "processes": native_processes(load_telemetry_settings()), "system_usage": system_usage_snapshot(),
             })

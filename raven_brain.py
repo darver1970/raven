@@ -72,6 +72,7 @@ class TaskStatus(str, Enum):
     RUNNING = "running"
     WAITING_CONFIRMATION = "waiting_confirmation"
     COMPLETED = "completed"
+    NEEDS_VERIFICATION = "needs_verification"
     FAILED = "failed"
     INTERRUPTED = "interrupted"
 

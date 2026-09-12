@@ -1,0 +1,41 @@
+# Čistá local-first konfigurace vytvořená samostatně pro každou portable kopii.
+
+[engine]
+default = "ollama"
+
+[intelligence]
+default_model = "qwen3.5:2b"
+
+[agent]
+default_agent = "orchestrator"
+max_turns = 16
+objective = "Používej výchozí lokální modely. Nástroje ovládající počítač nebo měnící data používej jen v rozsahu zadaném uživatelem a dodržuj oprávnění Raven. Netvrď dokončení bez ověření."
+
+[tools]
+enabled = "think,calculator,file_read,file_write,apply_patch,shell_exec,code_interpreter,git_status,git_diff,git_log,web_search,browser_navigate,browser_click,browser_type,browser_screenshot,browser_extract,browser_axtree,http_request,audio_transcribe,text_to_speech,pdf_extract,memory_manage,memory_store,memory_retrieve,memory_search,memory_index,knowledge_search,knowledge_sql,kg_add_entity,kg_add_relation,kg_query,kg_neighbors,retrieval,scan_chunks,user_profile_manage,skill_manage,agent_spawn,agent_send,agent_list"
+
+[tools.storage]
+default_backend = "sqlite"
+db_path = "__RAVEN_ROOT_ESCAPED__\\runtime\\openjarvis-memory.db"
+
+[security]
+enabled = true
+mode = "redact"
+scan_input = true
+scan_output = true
+secret_scanner = true
+pii_scanner = true
+
+[server]
+host = "127.0.0.1"
+port = 8000
+
+[speech]
+backend = "faster-whisper"
+model = "small"
+language = ""
+device = "cpu"
+compute_type = "int8"
+
+[telemetry]
+enabled = false

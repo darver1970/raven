@@ -18,7 +18,19 @@ SCREENSHOT = RESULTS / "raven-main.png"
 
 
 with sync_playwright() as playwright:
-    browser = playwright.chromium.connect_over_cdp("http://127.0.0.1:9223")
+    cdp_port = int(os.environ.get("RAVEN_DEBUG_PORT", "9223"))
+    browser = None
+    connect_error = None
+    connect_deadline = time.monotonic() + 60
+    while time.monotonic() < connect_deadline:
+        try:
+            browser = playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{cdp_port}")
+            break
+        except Exception as error:
+            connect_error = error
+            time.sleep(0.5)
+    if browser is None:
+        raise AssertionError(f"Electron CDP na portu {cdp_port} nebyl stabilně dostupný: {connect_error}")
     hud = None
     page_deadline = time.monotonic() + 30
     while time.monotonic() < page_deadline:
@@ -42,14 +54,111 @@ with sync_playwright() as playwright:
     assert hud.locator(".app-menu-brand").text_content().strip() == "Raven 1.2"
     assert hud.locator(".app-menu").count() == 3
     assert hud.evaluate("Boolean(window.ravenDesktop)") is True
-    assert hud.locator("#composer-access").input_value() == "full"
+    assert hud.locator("#composer-access").input_value() in {"full", "confirm", "denied"}
     assert hud.locator("#composer-simulate").get_attribute("aria-pressed") in {"true", "false"}
     assert hud.locator("#change-card").evaluate("node => node.classList.contains('hidden')") is True
     assert hud.locator("#change-card").evaluate("node => node.parentElement.id") == "messages"
+    hud.locator("#open-command-palette").click()
+    assert hud.locator("#command-palette-dialog").evaluate("node => node.open") is True
+    hud.locator("#command-palette-search").fill("telemetrie")
+    assert hud.locator("#command-palette-results .palette-item").count() >= 1
+    hud.locator("#command-palette-search").press("Escape")
+    hud.wait_for_function("!document.querySelector('#command-palette-dialog').open")
+    for workspace, expected_title in (
+        ("output", "Výstupy"),
+        ("logs", "Logy"),
+        ("memory", "Paměť"),
+        ("artifacts", "Artefakty"),
+    ):
+        hud.locator(f'[data-workspace="{workspace}"]').click()
+        hud.wait_for_timeout(150)
+        actual_title = hud.locator("#workspace-title").text_content().strip()
+        assert actual_title == expected_title, (workspace, expected_title, actual_title)
+        assert hud.locator(f'[data-workspace="{workspace}"].active').count() == 1
+    hud.locator('[data-workspace="memory"]').click()
+    hud.locator("#add-memory").wait_for(state="visible")
+    hud.locator("#add-memory").click()
+    assert hud.locator("#memory-dialog").evaluate("node => node.open") is True
+    hud.locator("#cancel-memory").click()
+    assert hud.locator("#memory-dialog").evaluate("node => node.open") is False
+    hud.locator('[data-view="chat"]').first.click()
+    hud.evaluate("""() => {
+        window.__qaPriorEvents = state.liveEvents;
+        window.__qaPriorEventChat = state.liveEventChatId;
+        renderLiveEvent({id:'qa-unverified', step:'needs_verification',
+            status:'needs_verification', chat_id:state.activeChatId,
+            result:'Úkol není ověřen jako dokončený'});
+    }""")
+    assert hud.locator(".live-work-log").inner_text().find("Vyžaduje další ověření") >= 0
+    assert not hud.locator('#task-progress [data-step="done"]').evaluate("node => node.classList.contains('active')")
+    hud.evaluate("""() => {
+        state.liveEvents = window.__qaPriorEvents;
+        state.liveEventChatId = window.__qaPriorEventChat;
+        delete window.__qaPriorEvents; delete window.__qaPriorEventChat;
+        renderWorkLog(); setProgress('Připraven');
+    }""")
     assert "Groq Free" in hud.locator("#composer-provider").text_content()
+    hud.evaluate("""async () => {
+      document.querySelector('#composer-access').value = 'full';
+      await fetch('http://127.0.0.1:8126/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({permission_mode:'full'})});
+    }""")
+    hud.locator("#add-project").click()
+    assert hud.locator("#project-dialog").evaluate("node => node.open") is True
+    hud.locator("#cancel-project").click()
+    assert hud.locator("#project-dialog").evaluate("node => node.open") is False
+    hud.locator('[data-view="agents"]').first.click()
+    hud.locator("#add-agent").click()
+    assert hud.locator("#agent-dialog").evaluate("node => node.open") is True
+    hud.locator("#cancel-agent").click()
+    assert hud.locator("#agent-dialog").evaluate("node => node.open") is False
+    hud.evaluate("openMemoryDialog()")
+    assert hud.locator("#memory-dialog").evaluate("node => node.open") is True
+    hud.locator("#cancel-memory-x").click()
+    assert hud.locator("#memory-dialog").evaluate("node => node.open") is False
+    hud.locator('[data-view="chat"]').first.click()
+    hud.locator("#add-project").click()
+    project_name = f"Raven smoke {int(time.time())}"
+    hud.locator("#project-form [name='name']").fill(project_name)
+    hud.locator("#save-project").click()
+    hud.wait_for_function(
+        "name => [...document.querySelectorAll('[data-project]')].some(node => node.textContent.includes(name))",
+        arg=project_name,
+    )
+    project_row = hud.locator(".project-entry", has_text=project_name)
+    assert project_row.locator("[data-delete-project]").count() == 1
+    project_row.locator("[data-delete-project]").click()
+    hud.wait_for_function(
+        "name => ![...document.querySelectorAll('[data-project]')].some(node => node.textContent.includes(name))",
+        arg=project_name,
+    )
+    hud.evaluate("""() => {
+      state.chats = [{id:'smoke-ui-chat', title:'UI test', messages:[
+        {id:'11111111111111111111111111111111', role:'user', content:'Původní dotaz', created_at:new Date().toISOString()},
+        {id:'22222222222222222222222222222222', role:'assistant', content:'Původní odpověď', created_at:new Date().toISOString(), feedback:{id:'33333333333333333333333333333333', rating:1, approved_for_training:false}}
+      ]}];
+      state.activeChatId = 'smoke-ui-chat';
+      renderMessages();
+    }""")
+    assert hud.locator("[data-edit-message]").count() == 1
+    assert hud.locator("[data-feedback='1'].feedback-selected").count() == 1
+    hud.evaluate("""async () => {
+      state.running = true;
+      document.querySelector('#command').value = 'Zaměř se hlavně na ovládání PC';
+      await sendMessage();
+    }""")
+    assert "ovládání PC" in hud.locator("#steering-text").text_content()
+    assert hud.locator("#steering-bar").evaluate("node => !node.classList.contains('hidden')") is True
+    hud.locator("#edit-steering").click()
+    assert "ovládání PC" in hud.locator("#command").input_value()
+    assert hud.locator("#steering-bar").evaluate("node => node.classList.contains('hidden')") is True
+    hud.evaluate("state.running = false; document.querySelector('#command').value = ''; renderMessages()")
     hud.locator('[data-view="settings"]').first.click()
     hud.wait_for_timeout(400)
     assert hud.locator("#online-provider-ack").count() == 1
+    assert hud.locator("#key-provider option").count() == 7
+    assert "Gemini Free" in hud.locator("#key-provider").text_content()
+    assert "Groq Free" in hud.locator("#key-provider").text_content()
+    assert "Cloudflare Workers AI Free" in hud.locator("#key-provider").text_content()
     provider_order_rows = hud.locator(".provider-order-row").count()
     assert provider_order_rows == 8, provider_order_rows
     assert "Data neopouštějí počítač" in hud.locator(".provider-status-grid").text_content()
@@ -95,7 +204,8 @@ with sync_playwright() as playwright:
     assert len(closed["tabs"]) >= 1
     hud.locator('[data-view="agents"]').first.click()
     hud.wait_for_timeout(400)
-    assert hud.get_by_text("Memory Manager", exact=True).count() == 1
+    hud.locator("#agent-tree").get_by_text("Memory Manager", exact=True).wait_for(state="attached", timeout=30000)
+    assert hud.locator("#agent-tree").get_by_text("Memory Manager", exact=True).count() == 1
     assert hud.get_by_text("Project Indexer", exact=True).count() == 1
     assert hud.locator("#agent-tree").get_by_text("Analytik", exact=True).count() == 1
     assert hud.get_by_text("Goal Manager", exact=True).count() == 1
@@ -109,6 +219,13 @@ with sync_playwright() as playwright:
     assert hud.locator(".disk-card").count() >= 1
     assert hud.locator(".disk-bar i").count() >= 1
     assert hud.locator(".telemetry-chart").count() == 5
+    assert hud.evaluate("state.hardware.online") is True
+    hud.locator('[data-view="computer"]').first.click()
+    hud.wait_for_function("document.querySelector('#computer-screen.ready') && document.querySelectorAll('.computer-window').length > 0", timeout=15000)
+    assert "Připraveno" in hud.locator("#computer-status").text_content()
+    assert hud.locator("#computer-screen").get_attribute("src").startswith("http://127.0.0.1:8126/computer/screenshot")
+    assert hud.locator("#computer-task-form").count() == 1
+    assert hud.locator("#computer-stop").count() == 1
     hud.locator('[data-view="settings"]').first.click()
     hud.wait_for_timeout(300)
     assert hud.locator("#library-locations").count() == 1
@@ -126,6 +243,9 @@ with sync_playwright() as playwright:
     assert hud.locator("#v12-settings-form [name='high_contrast']").count() == 1
     assert hud.locator("#mcp-quick-form").count() == 1
     assert hud.locator("#create-review-workflow").count() == 1
+    assert hud.locator("#cortex-status").count() == 1
+    assert hud.locator("#training-run-eval").count() == 1
+    assert hud.locator("#training-export").count() == 1
     assert abs(hud.evaluate("window.ravenDesktop.zoom(1.25)") - 1.25) < 0.01
     assert abs(hud.evaluate("window.ravenDesktop.zoom(1)") - 1) < 0.01
     hud.locator('[data-view="chat"]').first.click()

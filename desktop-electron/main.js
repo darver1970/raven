@@ -10,6 +10,8 @@ const WINDOWS_POWERSHELL = path.join(
   process.env.SystemRoot || 'C:\\Windows',
   'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'
 );
+const WINDOWS_POWERSHELL_ENV = { ...process.env };
+delete WINDOWS_POWERSHELL_ENV.PSModulePath;
 const INSTALL_CONFIG = path.join(process.env.LOCALAPPDATA || path.dirname(process.execPath), 'Raven', 'install-path.txt');
 let SAVED_ROOT = '';
 try { SAVED_ROOT = fs.readFileSync(INSTALL_CONFIG, 'utf8').trim(); } catch {}
@@ -60,13 +62,17 @@ if (IS_NSIS_INSTALL && !process.env.RAVEN_HOME && fs.existsSync(path.join(BUNDLE
   const encodedInstallerInvocation = Buffer.from(installerInvocation, 'utf16le').toString('base64');
   const elevatedCommand = [
     `$installerArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', ${quotePowerShell(encodedInstallerInvocation)})`,
-    `try { $installerProcess = Start-Process -FilePath ${quotePowerShell(WINDOWS_POWERSHELL)} -Verb RunAs -ArgumentList $installerArguments -Wait -PassThru; exit $installerProcess.ExitCode } catch { exit 1223 }`
+    `try { $installerProcess = Start-Process -FilePath ${quotePowerShell(WINDOWS_POWERSHELL)} -Verb RunAs -ArgumentList $installerArguments -PassThru; while (-not $installerProcess.HasExited) { Start-Sleep -Milliseconds 500; $installerProcess.Refresh() }; exit $installerProcess.ExitCode } catch { exit 1223 }`
   ].join('; ');
-  const child = spawn(WINDOWS_POWERSHELL, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', elevatedCommand], {
+  const bootstrapArguments = process.env.RAVEN_INSTALL_NONINTERACTIVE === '1'
+    ? ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encodedInstallerInvocation]
+    : ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', elevatedCommand];
+  const child = spawn(WINDOWS_POWERSHELL, bootstrapArguments, {
     cwd: BUNDLED_PROJECT,
     detached: false,
     windowsHide: true,
-    stdio: 'ignore'
+    stdio: 'ignore',
+    env: WINDOWS_POWERSHELL_ENV
   });
   child.once('spawn', () => {
     fs.appendFileSync(bootstrapLog, `${new Date().toISOString()} installer_process_started pid=${child.pid}\n`, 'utf8');
@@ -95,7 +101,7 @@ if (IS_NSIS_INSTALL && !process.env.RAVEN_HOME && fs.existsSync(path.join(BUNDLE
     const launcherProcess = spawn(
       WINDOWS_POWERSHELL,
       ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', launcher, '-NoDesktop'],
-      { cwd: INSTALLED_ROOT, detached: false, windowsHide: true, stdio: 'ignore' }
+      { cwd: INSTALLED_ROOT, detached: false, windowsHide: true, stdio: 'ignore', env: WINDOWS_POWERSHELL_ENV }
     );
     launcherProcess.once('spawn', () => {
       fs.appendFileSync(bootstrapLog, `${new Date().toISOString()} launcher_started pid=${launcherProcess.pid}\n`, 'utf8');
@@ -132,6 +138,7 @@ if (IS_NSIS_INSTALL && !process.env.RAVEN_HOME && fs.existsSync(path.join(BUNDLE
 if (
   app.isPackaged
   && !bootstrapInProgress
+  && process.env.RAVEN_SERVICES_READY !== '1'
   && fs.existsSync(path.join(INSTALLED_ROOT, 'raven_control.py'))
   && fs.existsSync(path.join(INSTALLED_ROOT, 'spustit-raven.ps1'))
 ) {
@@ -143,7 +150,7 @@ if (
   const launcherProcess = spawn(
     WINDOWS_POWERSHELL,
     ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', launcher, '-NoDesktop'],
-    { cwd: INSTALLED_ROOT, detached: false, windowsHide: true, stdio: 'ignore' }
+    { cwd: INSTALLED_ROOT, detached: false, windowsHide: true, stdio: 'ignore', env: WINDOWS_POWERSHELL_ENV }
   );
   launcherProcess.once('spawn', () => {
     fs.appendFileSync(launcherWrapperLog, `${new Date().toISOString()} launcher_started pid=${launcherProcess.pid}\n`, 'utf8');
@@ -190,13 +197,13 @@ const SNAPSHOTS = path.join(RUNTIME, 'snapshots');
 const TRASH = path.join(RUNTIME, 'trash');
 const ARTIFACTS = path.join(RUNTIME, 'artifacts');
 const BROWSER_STATE_PATH = path.join(RUNTIME, 'browser-tabs.json');
-const HUD_URL = 'http://127.0.0.1:5174/?desktop=electron&hud_version=1.1&asset_revision=raven-10';
+const HUD_URL = 'http://127.0.0.1:5174/?desktop=electron&hud_version=1.2&asset_revision=cortex-1';
 const TEXT_EXTENSIONS = new Set(['.css', '.html', '.js', '.json', '.md', '.ps1', '.py', '.txt', '.yml', '.yaml', '.toml']);
 const HIDDEN = new Set(['.git', '.venv', '__pycache__', 'node_modules', 'pyinstaller-build', 'pyinstaller-spec']);
 let mainWindow;
 let desktopApplicationStarted = false;
 let updaterConfigured = false;
-let updateState = { supported: false, status: 'idle', version: app.getVersion(), message: 'Aktualizace je dostupná v nainstalované verzi Raven.' };
+let updateState = { supported: false, status: 'idle', version: app.getVersion(), mode: 'none', message: 'Aktualizace zatím není nakonfigurovaná.' };
 let browserVisible = false;
 let browserBounds = { x: 0, y: 0, width: 0, height: 0 };
 let activeTabId = '';
@@ -222,18 +229,96 @@ process.on('unhandledRejection', error => writeLog(`unhandledRejection ${error?.
 writeLog(`start packaged=${app.isPackaged} root=${ROOT}`);
 
 function publishUpdateState(values = {}) {
-  updateState = { ...updateState, ...values, updatedAt: new Date().toISOString() };
+  updateState = { ...updateState, ...values, rollbackAvailable: fs.existsSync(path.join(RUNTIME, 'updates', 'last-result.json')), updatedAt: new Date().toISOString() };
   for (const window of BrowserWindow.getAllWindows()) {
     if (!window.isDestroyed()) window.webContents.send('update:status', updateState);
   }
   return updateState;
 }
 
+function portablePython() {
+  const base = path.join(RUNTIME, 'python');
+  if (!fs.existsSync(base)) return '';
+  for (const entry of fs.readdirSync(base, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const candidate = path.join(base, entry.name, 'python.exe');
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return '';
+}
+
+function runPortableUpdater(args, timeout = 180000) {
+  return new Promise((resolve, reject) => {
+    const python = portablePython();
+    const updater = path.join(ROOT, 'raven_updater.py');
+    if (!python || !fs.existsSync(updater)) return reject(new Error('Portable aktualizátor nebo vlastní Python chybí.'));
+    const child = spawn(python, [updater, ...args], { cwd: ROOT, windowsHide: true, env: WINDOWS_POWERSHELL_ENV });
+    let stdout = '';
+    let stderr = '';
+    const timer = setTimeout(() => { child.kill(); reject(new Error('Portable aktualizátor překročil časový limit.')); }, timeout);
+    child.stdout.on('data', value => { stdout += String(value); });
+    child.stderr.on('data', value => { stderr += String(value); });
+    child.once('error', error => { clearTimeout(timer); reject(error); });
+    child.once('close', code => {
+      clearTimeout(timer);
+      const line = stdout.trim().split(/\r?\n/).filter(Boolean).at(-1) || '';
+      try {
+        const result = JSON.parse(line);
+        if (code !== 0 || result.status === 'error') throw new Error(result.message || stderr || `Aktualizátor skončil kódem ${code}.`);
+        resolve(result);
+      } catch (error) {
+        reject(error instanceof SyntaxError ? new Error(stderr || stdout || 'Aktualizátor nevrátil platný výsledek.') : error);
+      }
+    });
+  });
+}
+
+let portableUpdatePromise = null;
+
+function portableUpdatesOffline() {
+  const settingsFile = path.join(RUNTIME, 'raven-1.2-settings.json');
+  if (!fs.existsSync(settingsFile)) return false;
+  const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8').replace(/^\uFEFF/, ''));
+  return settings.offline_mode === true || settings.safe_mode === true;
+}
+
+function checkPortableUpdates() {
+  if (portableUpdatePromise) return portableUpdatePromise;
+  if (updateState.status === 'installing') return Promise.resolve(updateState);
+  portableUpdatePromise = performPortableUpdateCheck().finally(() => { portableUpdatePromise = null; });
+  return portableUpdatePromise;
+}
+
+async function performPortableUpdateCheck() {
+  if (portableUpdatesOffline()) return publishUpdateState({ supported: true, mode: 'portable', status: 'offline', message: 'Kontrola aktualizací je v offline nebo bezpečném režimu vypnutá.' });
+  publishUpdateState({ supported: true, mode: 'portable', status: 'checking', message: 'Kontroluji portable vydání na GitHubu…' });
+  const result = await runPortableUpdater(['check', '--root', ROOT, '--current', app.getVersion()], 60000);
+  if (result.status !== 'available') return publishUpdateState({ ...result, mode: 'portable' });
+  if (portableUpdatesOffline()) return publishUpdateState({ status: 'offline', message: 'Režim se změnil na offline; aktualizace se nestáhne.' });
+  const updateDirectory = path.join(RUNTIME, 'updates');
+  fs.mkdirSync(updateDirectory, { recursive: true });
+  const checkState = path.join(updateDirectory, 'check.json');
+  fs.writeFileSync(checkState, JSON.stringify(result, null, 2), 'utf8');
+  publishUpdateState({ ...result, mode: 'portable', status: 'downloading', message: `Stahuji a ověřuji Raven ${result.availableVersion}…` });
+  const prepared = await runPortableUpdater(['prepare', '--root', ROOT, '--state', checkState], 900000);
+  return publishUpdateState({ supported: true, mode: 'portable', status: 'ready', version: app.getVersion(), availableVersion: prepared.version, stage: prepared.stage, message: `Raven ${prepared.version} je ověřený a připravený k aktualizaci.` });
+}
+
 function configureAutoUpdates() {
   if (updaterConfigured) return;
   updaterConfigured = true;
-  const supported = Boolean(app.isPackaged && IS_NSIS_INSTALL && !process.env.PORTABLE_EXECUTABLE_FILE);
-  publishUpdateState({ supported, status: supported ? 'checking' : 'unsupported', message: supported ? 'Kontroluji GitHub Releases…' : 'Automatická aktualizace vyžaduje nainstalovanou NSIS verzi.' });
+  const nsisSupported = Boolean(app.isPackaged && IS_NSIS_INSTALL && !process.env.PORTABLE_EXECUTABLE_FILE);
+  const portableSupported = Boolean(app.isPackaged && !IS_NSIS_INSTALL && portablePython() && fs.existsSync(path.join(ROOT, 'raven_updater.py')));
+  if (portableSupported) {
+    publishUpdateState({ supported: true, mode: 'portable', status: 'idle', message: 'Portable aktualizace je připravená.' });
+    setTimeout(() => checkPortableUpdates().catch(error => {
+      writeLog(`portable updater error ${error?.stack || error}`);
+      publishUpdateState({ supported: true, mode: 'portable', status: 'error', message: `Kontrola portable aktualizace selhala: ${error?.message || error}` });
+    }), 8000);
+    return;
+  }
+  const supported = nsisSupported;
+  publishUpdateState({ supported, mode: supported ? 'nsis' : 'none', status: supported ? 'checking' : 'unsupported', message: supported ? 'Kontroluji GitHub Releases…' : 'V této kopii není aktualizátor dostupný.' });
   if (!supported) return;
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = false;
@@ -262,7 +347,7 @@ function stopRavenServices() {
     execFileSync(
       WINDOWS_POWERSHELL,
       ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', stopScript, '-InstallRoot', ROOT, '-ExcludeProcessId', String(process.pid)],
-      { cwd: ROOT, timeout: 30000, windowsHide: true, stdio: 'ignore' }
+      { cwd: ROOT, timeout: 30000, windowsHide: true, stdio: 'ignore', env: WINDOWS_POWERSHELL_ENV }
     );
     writeLog('shutdown cleanup passed');
   } catch (error) {
@@ -558,21 +643,60 @@ function activeTab() {
   return tab;
 }
 
+function startPortableUpdateHelper(extraArgs = []) {
+  const script = path.join(ROOT, 'apply-portable-update.ps1');
+  if (!fs.existsSync(script)) return Promise.reject(new Error('Skript portable aktualizace chybí.'));
+  return new Promise((resolve, reject) => {
+    const child = spawn(WINDOWS_POWERSHELL, [
+      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', script,
+      '-Root', ROOT, '-WaitForProcessId', String(process.pid), ...extraArgs, '-Relaunch'
+    ], { cwd: ROOT, detached: true, windowsHide: true, stdio: 'ignore', env: WINDOWS_POWERSHELL_ENV });
+    child.once('error', reject);
+    child.once('spawn', () => {
+      child.unref();
+      setImmediate(() => app.quit());
+      resolve(true);
+    });
+  });
+}
+
 function installHandlers() {
   ipcMain.handle('app:root', () => ROOT);
   ipcMain.handle('update:status', () => updateState);
   ipcMain.handle('update:check', async () => {
     if (!updateState.supported) return updateState;
+    if (updateState.mode === 'portable') {
+      try { return await checkPortableUpdates(); }
+      catch (error) {
+        writeLog(`portable updater error ${error?.stack || error}`);
+        return publishUpdateState({ status: 'error', message: `Kontrola portable aktualizace selhala: ${error.message}` });
+      }
+    }
     publishUpdateState({ status: 'checking', message: 'Kontroluji GitHub Releases…' });
     await autoUpdater.checkForUpdates();
     return updateState;
   });
-  ipcMain.handle('update:install', () => {
+  ipcMain.handle('update:install', async () => {
     if (!updateState.supported || updateState.status !== 'ready') throw new Error('Aktualizace ještě není připravená k instalaci.');
+    if (updateState.mode === 'portable') {
+      const script = path.join(ROOT, 'apply-portable-update.ps1');
+      if (!fs.existsSync(script)) throw new Error('Aplikační skript portable aktualizace chybí.');
+      publishUpdateState({ status: 'installing', message: 'Ukončuji Raven, instaluji ověřenou aktualizaci a znovu jej spustím…' });
+      try { return await startPortableUpdateHelper(); }
+      catch (error) { publishUpdateState({ status: 'ready', message: `Aktualizace se nespustila: ${error.message}` }); throw error; }
+    }
     fs.writeFileSync(INSTALL_MARKER, 'Raven update pending', 'utf8');
     publishUpdateState({ status: 'installing', message: 'Instaluji aktualizaci a restartuji Raven…' });
     setImmediate(() => autoUpdater.quitAndInstall(false, true));
     return true;
+  });
+  ipcMain.handle('update:rollback', async () => {
+    if (updateState.mode !== 'portable' || !fs.existsSync(path.join(RUNTIME, 'updates', 'last-result.json'))) {
+      throw new Error('Není dostupná žádná portable aktualizace k návratu.');
+    }
+    publishUpdateState({ status: 'installing', message: 'Obnovuji předchozí portable verzi a restartuji Raven…' });
+    try { return await startPortableUpdateHelper(['-Rollback']); }
+    catch (error) { publishUpdateState({ status: 'error', message: `Návrat se nespustil: ${error.message}` }); throw error; }
   });
   ipcMain.handle('window:close', event => BrowserWindow.fromWebContents(event.sender)?.close());
   ipcMain.handle('window:minimize', event => BrowserWindow.fromWebContents(event.sender)?.minimize());
@@ -605,7 +729,7 @@ function installHandlers() {
     const cwdFile = path.join(executionDirectory, `terminal-${entry.id}-cwd.txt`);
     try { fs.rmSync(cwdFile, { force: true }); } catch {}
     const environment = {
-      ...process.env,
+      ...WINDOWS_POWERSHELL_ENV,
       RAVEN_TERMINAL_COMMAND: data,
       RAVEN_TERMINAL_CWD_FILE: cwdFile
     };
@@ -844,7 +968,29 @@ function createAuxWindow(display = '') {
 }
 
 function createMainWindow() {
-  mainWindow = new BrowserWindow({ width: 1600, height: 980, minWidth: 1100, minHeight: 700, backgroundColor: '#171715', title: 'Raven 1.2', icon: path.join(ROOT, 'desktop', 'raven.ico'), autoHideMenuBar: true, titleBarStyle: 'hidden', titleBarOverlay: { color: '#191917', symbolColor: '#bdbdb7', height: 30 }, webPreferences: { preload: path.join(__dirname, 'preload.js'), sandbox: true, contextIsolation: true, nodeIntegration: false } });
+  mainWindow = new BrowserWindow({ width: 1600, height: 980, minWidth: 900, minHeight: 600, show: false, backgroundColor: '#171715', title: 'Raven 1.2', icon: path.join(ROOT, 'desktop', 'raven.ico'), autoHideMenuBar: true, titleBarStyle: 'hidden', titleBarOverlay: { color: '#191917', symbolColor: '#bdbdb7', height: 30 }, webPreferences: { preload: path.join(__dirname, 'preload.js'), sandbox: true, contextIsolation: true, nodeIntegration: false } });
+  let windowRevealed = false;
+  const revealMainWindow = reason => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    try {
+      mainWindow.center();
+      mainWindow.maximize();
+      mainWindow.setAlwaysOnTop(true);
+      mainWindow.show();
+      mainWindow.focus();
+      mainWindow.moveTop();
+      windowRevealed = true;
+      writeLog(`main window shown reason=${reason} visible=${mainWindow.isVisible()} focused=${mainWindow.isFocused()} bounds=${JSON.stringify(mainWindow.getBounds())}`);
+      setTimeout(() => {
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setAlwaysOnTop(false);
+      }, 1500);
+    } catch (error) {
+      writeLog(`main window show failed reason=${reason} error=${error.stack || error}`);
+    }
+  };
+  mainWindow.once('ready-to-show', () => revealMainWindow('ready-to-show'));
+  mainWindow.webContents.once('did-finish-load', () => revealMainWindow('did-finish-load'));
+  setTimeout(() => { if (!windowRevealed) revealMainWindow('fallback-timeout'); }, 12000);
   mainWindow.webContents.on('render-process-gone', (_event, details) => writeLog(`renderer gone reason=${details.reason} code=${details.exitCode}`));
   mainWindow.webContents.on('did-fail-load', (_event, code, description, url) => writeLog(`load failed code=${code} description=${description} url=${url}`));
   mainWindow.webContents.on('console-message', (_event, level, message, line, source) => { if (level >= 2) writeLog(`renderer console level=${level} ${message} at ${source}:${line}`); });

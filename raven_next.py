@@ -47,6 +47,7 @@ PROMPT_INJECTION = re.compile(
 
 
 FEATURES: tuple[dict[str, Any], ...] = (
+    {"id": "raven_cortex", "name": "Raven Cortex · důkazní mozek", "group": "Kvalita", "stable": True},
     {"id": "model_manager", "name": "Správce modelů", "group": "Modely", "stable": True},
     {"id": "performance_profiles", "name": "Výkonnostní profily", "group": "Modely", "stable": True},
     {"id": "knowledge_hybrid", "name": "Znalostní knihovna a citace", "group": "Znalosti", "stable": True},
@@ -196,6 +197,12 @@ def _memory_total_gb() -> float:
 
 def system_profile() -> dict[str, Any]:
     ram = _memory_total_gb()
+    available_ram = 0.0
+    try:
+        import psutil
+        available_ram = round(psutil.virtual_memory().available / 1024**3, 1)
+    except (ImportError, OSError):
+        pass
     cores = os.cpu_count() or 1
     disk = shutil.disk_usage(ROOT)
     if ram and ram < 12:
@@ -209,6 +216,8 @@ def system_profile() -> dict[str, Any]:
         "cpu": platform.processor() or "Windows CPU",
         "logical_cores": cores,
         "ram_gb": ram,
+        "available_ram_gb": available_ram,
+        "model_budget_gb": round(min(ram, available_ram + 2.0), 1) if ram and available_ram else ram,
         "disk_free_gb": round(disk.free / 1024**3, 1),
         "recommended_profile": recommendation,
         "profile_reason": "Doporučení vychází z RAM, počtu vláken a volného místa.",
@@ -434,6 +443,7 @@ def memories(query: str = "") -> dict[str, Any]:
     current = _read(MEMORY_PATH, "memories")
     now = datetime.now(timezone.utc).astimezone()
     values = []
+    terms = set(re.findall(r"[a-z0-9á-ž_-]{3,}", query.lower()))
     for item in current.get("memories", []):
         expires = str(item.get("expires_at", ""))
         if expires:
@@ -443,11 +453,13 @@ def memories(query: str = "") -> dict[str, Any]:
             except ValueError:
                 pass
         haystack = f"{item.get('title', '')} {item.get('content', '')}".lower()
-        if query and query.lower() not in haystack:
+        words = set(re.findall(r"[a-z0-9á-ž_-]{3,}", haystack))
+        relevance = len(terms & words) / max(1, len(terms)) if terms else 1.0
+        if terms and not relevance:
             continue
-        values.append(item)
-    values.sort(key=lambda item: (not bool(item.get("pinned")), str(item.get("updated_at", ""))), reverse=False)
-    return {"memories": values[-500:]}
+        values.append({**item, "relevance": round(relevance, 4)})
+    values.sort(key=lambda item: (bool(item.get("pinned")), float(item.get("relevance", 0)), str(item.get("updated_at", ""))), reverse=True)
+    return {"memories": values[:500]}
 
 
 def save_memory(data: dict[str, Any]) -> dict[str, Any]:
@@ -466,6 +478,16 @@ def save_memory(data: dict[str, Any]) -> dict[str, Any]:
     values = [item for item in current.get("memories", []) if item.get("id") != memory_id and item.get("fingerprint") != fingerprint]
     values.append({"id": memory_id, "type": kind, "scope": scope, "title": str(data.get("title", kind))[:160], "content": content, "source": str(data.get("source", "user"))[:160], "pinned": data.get("pinned") is True, "expires_at": str(data.get("expires_at", ""))[:64], "fingerprint": fingerprint, "updated_at": _now()})
     _write(MEMORY_PATH, {"memories": values[-500:]})
+    return memories()
+
+
+def delete_memory(memory_id: str) -> dict[str, Any]:
+    memory_id = _validate_id(memory_id, "ID paměti")
+    current = _read(MEMORY_PATH, "memories")
+    values = [item for item in current.get("memories", []) if str(item.get("id", "")) != memory_id]
+    if len(values) == len(current.get("memories", [])):
+        raise ValueError("Paměť nebyla nalezena.")
+    _write(MEMORY_PATH, {"memories": values})
     return memories()
 
 

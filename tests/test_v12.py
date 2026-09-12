@@ -96,6 +96,12 @@ def test_typed_memory_deduplicates_content(isolated_v12: Path) -> None:
     assert result["memories"][0]["id"] == "second"
 
 
+def test_typed_memory_can_be_forgotten(isolated_v12: Path) -> None:
+    raven_next.save_memory({"id": "forgetme", "type": "temporary", "scope": "chat", "content": "Dočasná informace."})
+    result = raven_next.delete_memory("forgetme")
+    assert result["memories"] == []
+
+
 def test_context_budget_reports_overflow(isolated_v12: Path) -> None:
     raven_next.save_settings({"context_budget_tokens": 2048})
     result = raven_next.context_estimate({"items": [{"name": "large", "content": "x" * 10_000}]})

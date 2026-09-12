@@ -1,7 +1,8 @@
 # Spouští všechny lokální služby aplikace Raven z instalační složky a otevře její rozhraní.
 [CmdletBinding()]
 param(
-    [switch]$NoDesktop
+    [switch]$NoDesktop,
+    [switch]$NoErrorPopup
 )
 
 $ErrorActionPreference = "Stop"
@@ -11,6 +12,16 @@ New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
 $launcherLog = Join-Path $logDirectory 'launcher.log'
 $stateDirectory = Join-Path $root 'runtime\state'
 New-Item -ItemType Directory -Path $stateDirectory -Force | Out-Null
+$openJarvisConfig = Join-Path $root 'config.toml'
+if (-not (Test-Path -LiteralPath $openJarvisConfig -PathType Leaf)) {
+    $configTemplate = Join-Path $root 'defaults\openjarvis-portable.toml'
+    if (-not (Test-Path -LiteralPath $configTemplate -PathType Leaf)) {
+        throw 'Chybí čistá šablona konfigurace OpenJarvis.'
+    }
+    $escapedRoot = $root.Replace('\', '\\')
+    $configContent = (Get-Content -LiteralPath $configTemplate -Raw -Encoding utf8).Replace('__RAVEN_ROOT_ESCAPED__', $escapedRoot)
+    Set-Content -LiteralPath $openJarvisConfig -Value $configContent -Encoding utf8
+}
 $ollamaProcessMarker = Join-Path $stateDirectory 'ollama-process.json'
 $launcherMutex = [Threading.Mutex]::new($false, 'Local\RavenLauncherV1')
 if (-not $launcherMutex.WaitOne(30000)) { throw 'Jiné spuštění aplikace Raven stále probíhá.' }
@@ -93,9 +104,11 @@ function Test-RavenOllamaPort {
 }
 
 function Wait-RavenHttp([string]$Uri, [int]$Seconds) {
-    for ($attempt = 0; $attempt -lt ($Seconds * 2); $attempt++) {
+    Add-Content -LiteralPath $launcherLog -Value "$(Get-Date -Format o) Cekam na HTTP $Uri limit=${Seconds}s" -Encoding utf8
+    $waitDeadline = [DateTime]::UtcNow.AddSeconds($Seconds)
+    while ([DateTime]::UtcNow -lt $waitDeadline) {
         try {
-            $response = Invoke-WebRequest -Uri $Uri -UseBasicParsing -TimeoutSec 2
+            $response = Invoke-WebRequest -Uri $Uri -UseBasicParsing -TimeoutSec 5
             if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 300) { return }
         } catch {}
         Start-Sleep -Milliseconds 500
@@ -104,7 +117,9 @@ function Wait-RavenHttp([string]$Uri, [int]$Seconds) {
 }
 
 function Wait-RavenPort([int]$Port, [string]$ExpectedCommand, [int]$Seconds) {
-    for ($attempt = 0; $attempt -lt ($Seconds * 4); $attempt++) {
+    Add-Content -LiteralPath $launcherLog -Value "$(Get-Date -Format o) Cekam na sluzbu $ExpectedCommand port=$Port limit=${Seconds}s" -Encoding utf8
+    $waitDeadline = [DateTime]::UtcNow.AddSeconds($Seconds)
+    while ([DateTime]::UtcNow -lt $waitDeadline) {
         if (Test-RavenPort -Port $Port -ExpectedCommand $ExpectedCommand) { return }
         Start-Sleep -Milliseconds 250
     }
@@ -160,7 +175,13 @@ function Repair-PortablePythonPaths {
 
 try {
     Add-Content -LiteralPath $launcherLog -Value "$(Get-Date -Format o) Raven launcher start" -Encoding utf8
-    $env:PATH = "$root\runtime\node;$env:PATH"
+    $portablePathEntries = @(
+        "$root\runtime\node",
+        "$root\runtime\ollama",
+        "$root\runtime\git\cmd",
+        "$root\runtime\git\bin"
+    )
+    $env:PATH = (($portablePathEntries + @($env:PATH)) -join ';')
     $env:RAVEN_HOME = $root
     $env:OLLAMA_MODELS = "$root\runtime\ollama-models"
     $env:HF_HOME = "$root\runtime\huggingface"
@@ -170,11 +191,20 @@ try {
     New-Item -ItemType Directory -Path $env:TEMP -Force | Out-Null
     $pythonPath = Repair-PortablePythonPaths
 
+    $updateJournal = Join-Path $root 'runtime\updates\transaction.json'
+    if (Test-Path -LiteralPath $updateJournal -PathType Leaf) {
+        Add-Content -LiteralPath $launcherLog -Value "$(Get-Date -Format o) Obnovuji predchozi verzi po prerusene aktualizaci." -Encoding utf8
+        $recoveryOutput = & $pythonPath (Join-Path $root 'raven_updater.py') recover --root $root 2>&1
+        $recoveryCode = $LASTEXITCODE
+        $recoveryOutput | Add-Content -LiteralPath $launcherLog -Encoding utf8
+        if ($recoveryCode -ne 0 -or (Test-Path -LiteralPath $updateJournal -PathType Leaf)) {
+            throw 'Přerušenou aktualizaci se nepodařilo bezpečně obnovit. Raven nespustí smíšenou verzi; podrobnosti jsou v logu launcheru.'
+        }
+    }
+
 $ollamaPath = "$root\runtime\ollama\ollama.exe"
 if (-not (Test-Path -LiteralPath $ollamaPath)) {
-    $ollamaCommand = Get-Command ollama -ErrorAction SilentlyContinue
-    if (-not $ollamaCommand) { throw "Ollama nebyla nalezena. Nejdříve spusťte install.ps1." }
-    $ollamaPath = $ollamaCommand.Source
+    throw "Portable kopie není úplná: chybí $ollamaPath. Doplňte přibalenou Ollamu z úplné portable verze; Raven nepoužije instalaci z jiného počítače."
 }
 if (-not (Test-RavenOllamaPort)) {
     $ollamaProcess = Start-Process -FilePath $ollamaPath -ArgumentList "serve" -WorkingDirectory $root -WindowStyle Hidden -PassThru
@@ -188,10 +218,11 @@ if (-not (Test-RavenOllamaPort)) {
     for ($attempt = 0; $attempt -lt 40 -and -not (Test-RavenOllamaPort); $attempt++) { Start-Sleep -Milliseconds 250 }
     if (-not (Test-RavenOllamaPort)) { throw 'Lokální služba Ollama se nespustila na portu 11434.' }
 }
-Wait-RavenHttp -Uri 'http://127.0.0.1:11434/api/version' -Seconds 10
+Wait-RavenHttp -Uri 'http://127.0.0.1:11434/api/version' -Seconds 120
 if (-not (Test-RavenPort -Port 8000 -ExpectedCommand 'openjarvis.cli')) {
-    Start-Process -FilePath $pythonPath -ArgumentList '-m', 'openjarvis.cli', 'serve', '--host', '127.0.0.1', '--port', '8000' -WorkingDirectory "$root\src" -WindowStyle Hidden
-    Wait-RavenPort -Port 8000 -ExpectedCommand 'openjarvis.cli' -Seconds 90
+    $gatewayLogStamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
+    Start-Process -FilePath $pythonPath -ArgumentList '-m', 'openjarvis.cli', 'serve', '--host', '127.0.0.1', '--port', '8000' -WorkingDirectory "$root\src" -WindowStyle Hidden -RedirectStandardOutput (Join-Path $logDirectory "gateway-$gatewayLogStamp.out.log") -RedirectStandardError (Join-Path $logDirectory "gateway-$gatewayLogStamp.err.log")
+    Wait-RavenPort -Port 8000 -ExpectedCommand 'openjarvis.cli' -Seconds 300
 }
 Wait-RavenHttp -Uri 'http://127.0.0.1:8000/v1/agents/health' -Seconds 30
 if (-not (Test-RavenPort -Port 5174 -ExpectedCommand 'http.server')) {
@@ -260,13 +291,22 @@ if (-not $networkProcess) {
 
 # Nový Electron shell obsahuje skutečný prohlížeč WebContentsView, Monaco a pracovní karty.
 if (-not $NoDesktop) {
+    $previousRavenHome = $env:RAVEN_HOME
+    $previousServicesReady = $env:RAVEN_SERVICES_READY
+    $env:RAVEN_HOME = $root
+    $env:RAVEN_SERVICES_READY = '1'
+    try {
+    $desktopStartOptions = @{ WindowStyle = 'Hidden' }
+    if ($env:RAVEN_DEBUG_PORT -match '^\d{2,5}$') {
+        $desktopStartOptions.ArgumentList = "--remote-debugging-port=$($env:RAVEN_DEBUG_PORT)"
+    }
     $installedShell = "$root\Raven.exe"
     $desktopApp = "$root\desktop\Raven-Desktop.exe"
     $useDevelopmentShell = $env:RAVEN_DESKTOP_DEV -eq '1'
     if ((Test-Path -LiteralPath $installedShell) -and -not $useDevelopmentShell) {
-        Start-Process -FilePath $installedShell -WorkingDirectory $root
+        Start-Process -FilePath $installedShell -WorkingDirectory $root @desktopStartOptions
     } elseif ((Test-Path -LiteralPath $desktopApp) -and -not $useDevelopmentShell) {
-        Start-Process -FilePath $desktopApp -WorkingDirectory "$root\desktop"
+        Start-Process -FilePath $desktopApp -WorkingDirectory "$root\desktop" @desktopStartOptions
     } else {
         $electron = "$root\desktop-electron\node_modules\electron\dist\electron.exe"
         if (-not (Test-Path -LiteralPath $electron)) {
@@ -279,15 +319,21 @@ if (-not $NoDesktop) {
         $electronArguments += '.'
         Start-Process -FilePath $electron -ArgumentList $electronArguments -WorkingDirectory "$root\desktop-electron"
     }
+    } finally {
+        $env:RAVEN_HOME = $previousRavenHome
+        $env:RAVEN_SERVICES_READY = $previousServicesReady
+    }
 }
     Add-Content -LiteralPath $launcherLog -Value "$(Get-Date -Format o) Raven launcher success" -Encoding utf8
 } catch {
     $message = "Raven se nepodařilo spustit: $($_.Exception.Message)"
     Add-Content -LiteralPath $launcherLog -Value "$(Get-Date -Format o) $message`n$($_.ScriptStackTrace)" -Encoding utf8
-    try {
-        $popup = New-Object -ComObject WScript.Shell
-        $popup.Popup("$message`n`nPodrobnosti: $launcherLog", 0, 'Raven 1.2', 16) | Out-Null
-    } catch {}
+    if (-not $NoErrorPopup -and [Environment]::CommandLine -notmatch '(?i)-NonInteractive\b') {
+        try {
+            $popup = New-Object -ComObject WScript.Shell
+            $popup.Popup("$message`n`nPodrobnosti: $launcherLog", 30, 'Raven 1.2', 16) | Out-Null
+        } catch {}
+    }
     throw
 } finally {
     try { $launcherMutex.ReleaseMutex() } catch {}

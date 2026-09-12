@@ -1,7 +1,7 @@
 # Bezpečně ukončí pouze lokální služby patřící ke konkrétní instalaci Raven.
 [CmdletBinding()]
 param(
-    [string]$InstallRoot = $PSScriptRoot,
+    [string]$InstallRoot = '',
     [ValidateRange(1, 30)][int]$TimeoutSeconds = 10,
     [ValidateRange(0, 2147483647)][int]$ExcludeProcessId = 0
 )
@@ -16,7 +16,15 @@ try {
 if (-not $cleanupLockAcquired) {
     throw 'Jiné ukončování aplikace Raven stále probíhá.'
 }
-$resolvedRoot = [System.IO.Path]::GetFullPath($InstallRoot).TrimEnd('\')
+$effectiveInstallRoot = if ([string]::IsNullOrWhiteSpace($InstallRoot)) {
+    $PSScriptRoot
+} else {
+    $InstallRoot
+}
+if ([string]::IsNullOrWhiteSpace($effectiveInstallRoot)) {
+    throw 'Instalační složku Raven se nepodařilo určit.'
+}
+$resolvedRoot = [System.IO.Path]::GetFullPath($effectiveInstallRoot).TrimEnd('\')
 if (-not (Test-Path -LiteralPath $resolvedRoot -PathType Container)) {
     throw "Instalační složka Raven neexistuje: $resolvedRoot"
 }
@@ -91,7 +99,7 @@ function Test-RavenServiceSignature {
     $command = [string]$CommandLine
     switch ($normalizedName) {
         { $_ -in @('python.exe', 'pythonw.exe') } {
-            return $command -match '(?i)(raven_control\.py|hardware_monitor\.py|network_monitor\.py|-m\s+http\.server\s+5174)'
+            return $command -match '(?i)(raven_control\.py|hardware_monitor\.py|network_monitor\.py|-m\s+http\.server\s+5174|-m\s+openjarvis\.cli\s+serve)'
         }
         'node.exe' {
             return $command -match '(?i)(runtime[\\/]openclaw|openclaw\.mjs)'

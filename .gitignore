@@ -28,3 +28,7 @@ version-check.json
 backup-original-files/
 backup/
 .pytest_cache/
+desktop-electron/generated-installer/
+release-output/
+CODEX-HANDOFF*.md
+WORK-STATUS*.md

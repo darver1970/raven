@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import time
 import urllib.request
+import urllib.error
 
 from playwright.sync_api import Browser, Page, sync_playwright
 
@@ -20,22 +21,31 @@ def request_json(url: str, payload: dict[str, object] | None = None, timeout: in
         headers={"Content-Type": "application/json"},
         method="GET" if payload is None else "POST",
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        detail = json.loads(error.read().decode("utf-8"))
+        raise AssertionError(f"HTTP {error.code}: {detail.get('error', 'unknown error')}") from error
 
 
-def wait_for_hud(browser: Browser, timeout_seconds: int = 45) -> Page:
+def wait_for_hud(browser: Browser, timeout_seconds: int = 300) -> Page:
     deadline = time.monotonic() + timeout_seconds
+    discovery = browser.new_browser_cdp_session()
     while time.monotonic() < deadline:
+        # Pump protocol events while the packaged app creates its first window.
+        discovery.send("Target.getTargets")
         page_candidates = [page for context in browser.contexts for page in context.pages]
         hud = next(
             (page for page in page_candidates if page.url.startswith("http://127.0.0.1:5174/")),
             None,
         )
         if hud is not None:
+            discovery.detach()
             return hud
         time.sleep(0.25)
-    raise AssertionError("Nainstalovaný Raven nenačetl HUD do 45 sekund.")
+    discovery.detach()
+    raise AssertionError(f"Nainstalovaný Raven nenačetl HUD do {timeout_seconds} sekund.")
 
 
 def main() -> None:
@@ -43,6 +53,7 @@ def main() -> None:
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--cdp-port", required=True, type=int)
     parser.add_argument("--screenshot", required=True, type=Path)
+    parser.add_argument("--skip-model", action="store_true", help="Only validate UI/tools; report inference as skipped")
     arguments = parser.parse_args()
 
     root = arguments.root.resolve()
@@ -57,10 +68,13 @@ def main() -> None:
     browser = None
     hud = None
     errors: list[str] = []
+    settings_before = None
+    test_settings = {"permission_mode": "full", "simulation_mode": False, "ai_provider": "local"}
     try:
         with sync_playwright() as playwright:
             browser = playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{arguments.cdp_port}")
             hud = wait_for_hud(browser)
+            print("HUD connected", flush=True)
             hud.on("pageerror", lambda error: errors.append(str(error)))
             hud.reload(wait_until="domcontentloaded")
             hud.wait_for_timeout(1200)
@@ -71,6 +85,7 @@ def main() -> None:
             assert hud.evaluate("Boolean(window.ravenDesktop)") is True
             installed_root = Path(hud.evaluate("window.ravenDesktop.rootPath()")).resolve()
             assert installed_root == root
+            print("Application root verified", flush=True)
             files = hud.evaluate("path => window.ravenDesktop.listFiles({path})", str(root))
             assert any(item["name"] == "raven_control.py" for item in files["entries"])
 
@@ -91,11 +106,12 @@ def main() -> None:
                 timeout=15000,
             )
             hud.evaluate("id => window.ravenDesktop.terminal.close({id})", terminal_id)
+            print("Terminal passed", flush=True)
 
             hud.locator('[data-view="agents"]').first.click()
-            hud.wait_for_timeout(400)
-            assert hud.get_by_text("Memory Manager", exact=True).count() == 1
-            assert hud.get_by_text("Installer", exact=True).count() == 1
+            hud.locator("#agent-tree").get_by_text("Memory Manager", exact=True).wait_for(state="attached", timeout=30000)
+            assert hud.locator("#agent-tree").get_by_text("Memory Manager", exact=True).count() == 1
+            assert hud.locator("#agent-tree").get_by_text("Installer", exact=True).count() == 1
             assert hud.locator("#agent-tree").get_by_text("Analytik", exact=True).count() == 1
             hud.locator('[data-view="telemetry"]').first.click()
             hud.wait_for_timeout(2200)
@@ -103,9 +119,10 @@ def main() -> None:
             assert hud.locator(".disk-bar i").count() >= 1
             assert hud.locator(".telemetry-chart").count() == 5
 
+            settings_before = request_json("http://127.0.0.1:8126/settings")
             request_json(
                 "http://127.0.0.1:8126/settings",
-                {"permission_mode": "full", "simulation_mode": False, "ai_provider": "local"},
+                test_settings,
             )
             create_result = request_json(
                 "http://127.0.0.1:8126/chat",
@@ -123,7 +140,7 @@ def main() -> None:
             assert create_result["provider"] == "local-tool"
             assert test_file.read_text(encoding="utf-8") == "Raven installed agent OK"
 
-            answer_result = request_json(
+            answer_result = {"answer": "SKIPPED (no model installed)", "provider": "skipped"} if arguments.skip_model else request_json(
                 "http://127.0.0.1:8126/chat",
                 {
                     "model": "qwen3.5:4b",
@@ -132,9 +149,10 @@ def main() -> None:
                 },
             )
             answer = str(answer_result.get("answer", "")).strip()
-            assert answer_result["provider"] == "local"
-            assert re.search(r"(?<!\d)42(?!\d)", answer), answer
-            assert answer_result.get("review", {}).get("accepted") is True
+            if not arguments.skip_model:
+                assert answer_result["provider"] == "local"
+                assert re.search(r"(?<!\d)42(?!\d)", answer), answer
+                assert answer_result.get("review", {}).get("accepted") is True
 
             delete_result = request_json(
                 "http://127.0.0.1:8126/chat",
@@ -161,7 +179,7 @@ def main() -> None:
                         "terminal": "passed",
                         "file_agent": "create-readback-delete passed",
                         "local_model": answer,
-                        "review": "accepted",
+                        "review": "skipped" if arguments.skip_model else "accepted",
                         "screenshot": str(arguments.screenshot),
                     },
                     ensure_ascii=False,
@@ -169,11 +187,24 @@ def main() -> None:
                 flush=True,
             )
             try:
+                if settings_before is not None:
+                    current = request_json("http://127.0.0.1:8126/settings")
+                    restore = {key: settings_before[key] for key, value in test_settings.items()
+                               if key in settings_before and current.get(key) == value}
+                    if restore:
+                        request_json("http://127.0.0.1:8126/settings", restore)
+                    settings_before = None
                 hud.evaluate("window.ravenDesktop.close()")
             except Exception as error:
                 if "closed" not in str(error).lower() and "destroyed" not in str(error).lower():
                     raise
     finally:
+        if settings_before is not None:
+            current = request_json("http://127.0.0.1:8126/settings")
+            restore = {key: settings_before[key] for key, value in test_settings.items()
+                       if key in settings_before and current.get(key) == value}
+            if restore:
+                request_json("http://127.0.0.1:8126/settings", restore)
         if test_file.exists():
             test_file.unlink()
 

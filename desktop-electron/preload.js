@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('ravenDesktop', {
     status: () => invoke('update:status'),
     check: () => invoke('update:check'),
     install: () => invoke('update:install'),
+    rollback: () => invoke('update:rollback'),
     onStatus: callback => {
       const listener = (_event, value) => callback(value);
       ipcRenderer.on('update:status', listener);
