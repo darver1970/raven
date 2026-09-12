@@ -18,7 +18,7 @@ function Copy-Overlay([string]$From, [string]$To, [string[]]$Exclude = @()) {
     if (-not (Test-Path -LiteralPath $From)) { return }
     New-Item -ItemType Directory -Path $To -Force | Out-Null
     $arguments = @($From, $To, '/E', '/COPY:DAT', '/DCOPY:DAT', '/R:2', '/W:1', '/XJ', '/NFL', '/NDL', '/NJH', '/NJS', '/NP')
-    $arguments += @('/XF', '*.db', '*.db-*', '*.sqlite', '*.sqlite3', '*.sqlite-*', '*.sqlite3-*', '*.log', '*.pyc', '*.pyo', '.env', '.env.*', 'config.toml', 'hardware-status.json', 'network-status.json', 'voice-event.json', 'RAVEN-MAIN-PERSONAL.json', 'main-personal-drive.json', 'Raven.exe')
+    $arguments += @('/XF', '*.db', '*.db-*', '*.sqlite', '*.sqlite3', '*.sqlite-*', '*.sqlite3-*', '*.log', '*.pyc', '*.pyo', '*.tmp', '.env', '.env.*', 'config.toml', 'hardware-status.json', 'network-status.json', 'voice-event.json', 'RAVEN-MAIN-PERSONAL.json', 'main-personal-drive.json', 'Raven.exe')
     $Exclude += @('.git', '.venv', '__pycache__', '.pytest_cache', 'node_modules')
     if ($Exclude.Count) { $arguments += '/XD'; $arguments += $Exclude }
     & robocopy.exe @arguments | Out-Null

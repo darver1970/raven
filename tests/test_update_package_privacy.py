@@ -13,7 +13,7 @@ def test_real_packager_excludes_personal_files(tmp_path):
     (source / "hud" / "nested" / "__pycache__").mkdir(parents=True)
     (source / "VERSION").write_text("v1.2")
     (source / "hud" / "index.html").write_text("<html><body>test</body></html>")
-    for name in ("hardware-status.json", "network-status.json", "voice-event.json", ".env", "private.db", "main-personal-drive.json"):
+    for name in ("hardware-status.json", "hardware-status.json.random.tmp", "network-status.json", "voice-event.json", ".env", "private.db", "main-personal-drive.json"):
         (source / "hud" / name).write_text("PRIVATE_SENTINEL")
     (source / "hud" / "nested" / "__pycache__" / "private.pyc").write_bytes(b"PRIVATE_SENTINEL")
     script = Path(__file__).resolve().parents[1] / "build-portable-update.ps1"
