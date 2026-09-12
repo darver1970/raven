@@ -1,5 +1,13 @@
 # Raven 1.2
 
+## Opravná portable verze 1.2.1 (12. září 2026)
+
+- Telemetrie nyní zobrazuje všechna nativně dostupná data také bez správcovských práv: CPU takt a jádra, celkovou/použitou/volnou RAM, baterii, napájení, dobu běhu, síť, disky, procesy a procesové GPU.
+- Teploty, ventilátory a příkon se zobrazí pouze tehdy, když je hardware skutečně poskytne. V nastavení telemetrie je bezpečné tlačítko pro spuštění přibaleného LibreHardwareMonitoru přes standardní Windows UAC.
+- Opraveno chybné svázání diskového přehledu s volitelným senzorovým mostem a doplněny přesné stavy dostupnosti jednotlivých skupin metrik.
+- Aktualizované závislosti Electronu odstraňují známé zranitelnosti `js-yaml`, `@xmldom/xmldom` a `fast-uri`; úplný `npm audit` hlásí nulu.
+- Portable synchronizace už na flash nekopíruje nepotřebné vývojové `desktop-electron/node_modules`; zabalený běh používá samostatnou složku `desktop`.
+
 ## Aktualizace Cortex (4. září 2026)
 
 Chat zapisuje cíle, kontrolní body a důkazy do lokální SQLite databáze.
@@ -118,7 +126,7 @@ Rozhraní a návrh pracovních postupů vycházejí z veřejně dostupných prin
 
 Před vydáním se kontroluje syntaxe Pythonu, PowerShellu a JavaScriptu, lokální API, souběh agentů, jednorázová potvrzení, zotavení úloh, načtení skutečného Electron rozhraní, psaní do editoru, historie, telemetrie, skutečný souborový nástroj přes chat, lokální odpověď modelu a čisté ukončení všech vlastních procesů. Raven si eviduje přesný proces své Ollamy a při ukončení nesmí zastavit cizí instanci. GitHub se aktualizuje pouze na výslovný pokyn uživatele.
 
-Aktuální lokální ověření Raven 1.2 ze dne 12. září 2026 zahrnuje 231 úspěšných automatických testů a pět záměrně přeskočených volitelných živých scénářů. Samostatně prošel živý lokální AI planner, celé HTTP → Cortex → ovládání Windows → ověření → audit, rozšířený Electron smoke test a ostrý start z C: i z hlavní portable flash. Finální flash proces běžel přímo ze stabilní cesty `Raven-1.2\desktop\Raven-Desktop.exe` a měl viditelné reagující okno.
+Aktuální lokální ověření Raven 1.2.1 ze dne 12. září 2026 zahrnuje 234 úspěšných automatických testů a pět záměrně přeskočených volitelných živých scénářů. Samostatně prošel živý lokální AI planner, celé HTTP → Cortex → ovládání Windows → ověření → audit, živý lokální Builder, rozšířený Electron smoke test a ostrý start z C: i z hlavní portable flash. Finální flash proces běžel přímo ze stabilní cesty `Raven-1.2\desktop\Raven-Desktop.exe` a měl viditelné reagující okno.
 
 Výsledkem je přímý `desktop/Raven-Desktop.exe` uvnitř kompletní portable složky a kořenový grafický spouštěč `Raven Portable.exe`. Pro autoupdate release obsahuje `raven-portable-update.json` a odpovídající ověřený ZIP. Instalační EXE se nevytváří, dokud o něj uživatel výslovně nepožádá.
 

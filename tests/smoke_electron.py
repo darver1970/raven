@@ -176,7 +176,7 @@ with sync_playwright() as playwright:
         "path => window.ravenDesktop.readFile(`${path}\\\\VERSION`)",
         root_path,
     )
-    assert version_file["content"].strip() in {"1.2", "v1.2"}
+    assert version_file["content"].strip() in {"1.2", "v1.2", "1.2.1", "v1.2.1"}
     terminal_state = hud.evaluate("window.ravenDesktop.terminal.create({})")
     terminal_id = terminal_state["terminals"][-1]["id"]
     hud.evaluate(
@@ -220,6 +220,12 @@ with sync_playwright() as playwright:
     assert hud.locator(".disk-bar i").count() >= 1
     assert hud.locator(".telemetry-chart").count() == 5
     assert hud.evaluate("state.hardware.online") is True
+    assert hud.evaluate("Number(state.hardware.performance?.cpu_clock_mhz || 0) > 0") is True
+    assert hud.evaluate("Number(state.hardware.performance?.ram_total_gb || 0) > 0") is True
+    assert hud.evaluate("Number(state.hardware.performance?.cpu_logical_cores || 0) > 0") is True
+    assert hud.evaluate("state.hardware.availability?.disks?.available === true") is True
+    assert hud.locator("#telemetry-summary").get_by_text("RAM celkem", exact=True).count() == 1
+    assert hud.locator("#telemetry-summary").get_by_text("Doba běhu", exact=True).count() == 1
     hud.locator('[data-view="computer"]').first.click()
     hud.wait_for_function("document.querySelector('#computer-screen.ready') && document.querySelectorAll('.computer-window').length > 0", timeout=15000)
     assert "Připraveno" in hud.locator("#computer-status").text_content()
@@ -234,6 +240,11 @@ with sync_playwright() as playwright:
     assert hud.locator(".provider-status-card").count() >= 9
     assert hud.locator("#codex-status").count() == 1
     assert "Codex" not in hud.locator("#key-provider").text_content()
+    hud.locator("#open-telemetry-settings").click()
+    hud.locator("#start-hardware-sensors").wait_for(state="visible")
+    assert "UAC" in hud.locator("#hardware-sensor-result").text_content()
+    hud.locator("#telemetry-dialog button[value='cancel']").first.click()
+    assert hud.locator("#telemetry-dialog").evaluate("node => node.open") is False
     hud.locator('[data-view="capabilities"]').first.click()
     hud.wait_for_function("document.querySelectorAll('.capability-card').length >= 32", timeout=10000)
     assert hud.locator("#view-capabilities.active").count() == 1

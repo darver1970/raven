@@ -26,6 +26,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import hardware_monitor
+
 from agent_runtime import AgentTask, RUNTIME as AGENT_RUNTIME
 from computer_control import COMPUTER, ComputerControlError
 from raven_builder import build_project, detect_application_request
@@ -2539,6 +2541,47 @@ def run_powershell(command: str, elevated: bool) -> dict[str, Any]:
     }
 
 
+def start_hardware_sensors_elevated() -> dict[str, Any]:
+    """Spustí pouze přibalený LibreHardwareMonitor přes standardní Windows UAC."""
+    sensor_root = (ROOT / "runtime" / "librehardwaremonitor").resolve()
+    candidates = sorted(sensor_root.rglob("LibreHardwareMonitor.exe")) if sensor_root.is_dir() else []
+    if not candidates:
+        raise ValueError("Přibalený LibreHardwareMonitor nebyl nalezen.")
+    executable = candidates[0].resolve()
+    if sensor_root not in executable.parents:
+        raise ValueError("Neplatná cesta hardwarového monitoru.")
+    executable_literal = str(executable).replace("'", "''")
+    working_literal = str(executable.parent).replace("'", "''")
+    command = (
+        "$existing = Get-Process -Name 'LibreHardwareMonitor' -ErrorAction SilentlyContinue; "
+        f"if (-not $existing) {{ Start-Process -FilePath '{executable_literal}' -WorkingDirectory '{working_literal}' -WindowStyle Hidden }}"
+    )
+    result = run_powershell(command, elevated=True)
+    if int(result.get("exit_code", 1)) != 0:
+        raise ValueError(str(result.get("output") or "Spuštění senzorů jako správce bylo zrušeno nebo selhalo.")[:1000])
+    deadline = time.monotonic() + 15
+    sensors: list[dict[str, Any]] = []
+    while time.monotonic() < deadline:
+        try:
+            sensors = hardware_monitor.fetch_sensors()
+            break
+        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+            time.sleep(0.4)
+    temperatures = [item for item in sensors if item.get("type") == "temperature" and item.get("value") is not None]
+    return {
+        "status": "running" if sensors else "started_without_http",
+        "sensor_online": bool(sensors),
+        "temperature_online": bool(temperatures),
+        "sensor_count": len(sensors),
+        "temperature_count": len(temperatures),
+        "message": (
+            f"Senzory jsou připojené; nalezeno {len(temperatures)} teplotních hodnot."
+            if temperatures else
+            "LibreHardwareMonitor byl spuštěn, ale hardware zatím neposkytl teplotní hodnoty."
+        ),
+    }
+
+
 class Handler(BaseHTTPRequestHandler):
     """Povoluje pouze lokální čtení a bezpečnou správu textových pravidel."""
 
@@ -3084,6 +3127,12 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if self.path == "/telemetry/settings":
                 self.send_json(update_telemetry_settings(data))
+                return
+            if self.path == "/telemetry/sensors/start":
+                require_permission(data, "spuštění hardwarových senzorů jako správce")
+                if data.get("confirmed") is not True:
+                    raise ValueError("Spuštění teplotních senzorů vyžaduje potvrzení v HUDu a Windows UAC.")
+                self.send_json(start_hardware_sensors_elevated())
                 return
             if self.path == "/providers/key":
                 provider = normalize_provider(data.get("provider"))

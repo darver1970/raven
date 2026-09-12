@@ -1,5 +1,13 @@
 # Raven 1.2 – centrum lokálních schopností
 
+## Opravná verze 1.2.1 — 12. září 2026
+
+- Doplněny nativně dostupné údaje telemetrie: CPU takt, fyzická a logická jádra, celková RAM, stav baterie a napájení, doba běhu a síťový provoz.
+- Disky se zobrazují nezávisle na volitelném LibreHardwareMonitoru. Chybějící teploty už mají konkrétní vysvětlení a lze spustit přibalené senzory jako správce přes standardní UAC.
+- Opraveny tři aktuální skupiny npm zranitelností; produkční i úplný audit mají 0 známých zranitelností.
+- Zrychlena budoucí příprava portable kopie vyloučením nepoužívaných vývojových npm balíků z flash distribuce.
+- Ověření před vydáním: `234 passed, 5 skipped`, živý Electron HUD, živé ovládání PC ve třech vrstvách, lokální Builder, omezený-PATH portable test na C: i E: a přímý viditelný start z E:.
+
 ## Finální portable opravy — 12. září 2026
 
 - Produkční ovládání počítače je napojené na Cortex a dokončení vyžaduje ověřený důkaz; UI Automation používá stabilní COM vlákno.
@@ -46,7 +54,7 @@
 
 ## Portable distribuce 1.2
 
-Výchozí distribucí je kompletní portable složka s kořenovým `Raven Portable.exe`. GitHub release poskytuje ověřený programový overlay `Raven-Portable-Update-v1.2.0.zip` a manifest `raven-portable-update.json` pro vestavěný autoupdate. Instalační EXE není součástí tohoto vydání.
+Výchozí distribucí je kompletní portable složka s kořenovým `Raven Portable.exe`. GitHub release poskytuje ověřený programový overlay `Raven-Portable-Update-v1.2.1.zip` a manifest `raven-portable-update.json` pro vestavěný autoupdate. Instalační EXE není součástí tohoto vydání.
 
 ## Ověření portable balíku 1.2
 

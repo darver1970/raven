@@ -83,6 +83,11 @@ foreach ($name in $applicationDirectories) {
         (Join-Path $from 'tests'), (Join-Path $from 'docs'),
         (Join-Path $from 'examples'), (Join-Path $from 'generated-installer')
     )
+    if ($name -eq 'desktop-electron') {
+        # Zabalený runtime je v desktop\. Vývojové npm balíky mají stovky MB,
+        # nejsou při spuštění portable verze použité a výrazně zpomalují USB.
+        $excluded += (Join-Path $from 'node_modules')
+    }
     # src\.venv je povinná součást plně přenosného produktu. Launcher při
     # každém startu opraví pyvenv.cfg i editable .pth podle aktuálního disku.
     Copy-TreeOverlay $from $to $excluded

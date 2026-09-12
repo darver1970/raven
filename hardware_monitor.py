@@ -380,6 +380,13 @@ def snapshot() -> dict[str, Any]:
         default=None,
     )
     temperatures = [sensor for sensor in sensors if features.get("temperatures", True) and sensor["type"] == "temperature" and sensor["value"] is not None]
+    cpu_frequency = psutil.cpu_freq()
+    battery = None
+    try:
+        battery = psutil.sensors_battery()
+    except (AttributeError, OSError):
+        battery = None
+    memory = psutil.virtual_memory()
     performance = {
         "cpu_clock_mhz": sensor_value(sensors, ("cpu", "cores"), ("clock",)),
         "cpu_power_w": sensor_value(sensors, ("cpu", "package"), ("power",)),
@@ -389,15 +396,23 @@ def snapshot() -> dict[str, Any]:
         "ram_available_gb": sensor_value_all(sensors, ("total memory", "available"), ("data",)),
         "network_load": sensor_value(sensors, ("network utilization",), ("load",)),
         "fan_rpm": sensor_value(sensors, ("cpu", "fan"), ("fan",)),
+        "battery_percent": round(float(battery.percent), 1) if battery is not None else None,
+        "battery_plugged": bool(battery.power_plugged) if battery is not None else None,
+        "battery_seconds_left": int(battery.secsleft) if battery is not None and battery.secsleft >= 0 else None,
+        "uptime_seconds": max(0, round(time.time() - psutil.boot_time())),
+        "cpu_physical_cores": psutil.cpu_count(logical=False),
+        "cpu_logical_cores": psutil.cpu_count(logical=True),
+        "ram_total_gb": round(memory.total / (1024 ** 3), 2),
     }
     system_usage = system_usage_snapshot()
     if disk_activity is not None:
         system_usage["disk_percent"] = round(disk_activity, 1)
     if network_utilization is not None:
         system_usage["network_percent"] = round(network_utilization, 1)
-    disks = native_disks() if features.get("hardware_sensors", True) else []
+    # Disk usage is a native psutil metric and must remain available even when
+    # the optional LibreHardwareMonitor sensor bridge is disabled or missing.
+    disks = native_disks()
     processes = native_processes(settings)
-    memory = psutil.virtual_memory()
     cpu_load_value = cpu_load["value"] if cpu_load else system_usage.get("cpu_percent")
     ram_load_value = ram_load["value"] if ram_load else system_usage.get("memory_percent")
     process_gpu_load = min(100.0, sum(float(item.get("gpu_percent") or 0) for item in processes))
@@ -406,6 +421,27 @@ def snapshot() -> dict[str, Any]:
         performance["ram_used_gb"] = round((memory.total - memory.available) / (1024 ** 3), 2)
     if performance["ram_available_gb"] is None:
         performance["ram_available_gb"] = round(memory.available / (1024 ** 3), 2)
+    if performance["cpu_clock_mhz"] is None and cpu_frequency is not None and cpu_frequency.current > 0:
+        performance["cpu_clock_mhz"] = round(float(cpu_frequency.current), 1)
+    if performance["network_load"] is None:
+        performance["network_load"] = system_usage.get("network_mbps")
+    temperature_online = bool(temperatures)
+    if temperature_online:
+        sensor_message = f"Připojeno {len(temperatures)} teplotních senzorů."
+    elif sensor_online:
+        sensor_message = "LibreHardwareMonitor běží, ale tento hardware neposkytl teplotní senzor."
+    else:
+        sensor_message = "Teploty vyžadují podporovaný senzor a LibreHardwareMonitor spuštěný jako správce; ostatní dostupná data se měří nativně."
+    availability = {
+        "temperatures": {"available": temperature_online, "source": "LibreHardwareMonitor" if temperature_online else "unavailable"},
+        "cpu_clock": {"available": performance["cpu_clock_mhz"] is not None, "source": "LibreHardwareMonitor" if sensors and sensor_value(sensors, ("cpu", "cores"), ("clock",)) is not None else "psutil"},
+        "cpu_power": {"available": performance["cpu_power_w"] is not None, "source": "LibreHardwareMonitor" if performance["cpu_power_w"] is not None else "unavailable"},
+        "gpu_power": {"available": performance["gpu_power_w"] is not None, "source": "LibreHardwareMonitor" if performance["gpu_power_w"] is not None else "unavailable"},
+        "fan": {"available": performance["fan_rpm"] is not None, "source": "LibreHardwareMonitor" if performance["fan_rpm"] is not None else "unavailable"},
+        "battery": {"available": battery is not None, "source": "Windows / psutil" if battery is not None else "not-present"},
+        "network": {"available": True, "source": "Windows / psutil"},
+        "disks": {"available": bool(disks), "source": "Windows / psutil"},
+    }
     extended = collect_extended(
         features, sensors, processes, system_usage, disks,
         gpu_load_value,
@@ -415,7 +451,8 @@ def snapshot() -> dict[str, Any]:
         "source": "Libre Hardware Monitor + Windows" if sensor_online else "Windows / psutil",
         "online": True,
         "sensor_online": sensor_online,
-        "sensor_message": "Rozšířené teplotní senzory jsou připojené." if sensor_online else "Rozšířené teploty nejsou dostupné; základní telemetrie je plně aktivní.",
+        "temperature_online": temperature_online,
+        "sensor_message": sensor_message,
         "sensor_error": sensor_error,
         "cpu": {"temperature": cpu_temp and cpu_temp["value"], "load": cpu_load_value},
         "gpu": {"temperature": gpu_temp and gpu_temp["value"], "load": gpu_load_value},
@@ -425,6 +462,7 @@ def snapshot() -> dict[str, Any]:
         "disks": disks,
         "processes": processes,
         "system_usage": system_usage,
+        "availability": availability,
         "extended": extended,
     }
 

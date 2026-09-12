@@ -20,6 +20,9 @@ def make_source(root: Path) -> None:
     (root / "spustit-raven.ps1").write_text("# launcher", encoding="utf-8")
     (root / "hud").mkdir()
     (root / "hud" / "index.html").write_text("Raven", encoding="utf-8")
+    (root / "desktop-electron" / "node_modules" / "dev-only").mkdir(parents=True)
+    (root / "desktop-electron" / "node_modules" / "dev-only" / "index.js").write_text("dev", encoding="utf-8")
+    (root / "desktop-electron" / "package.json").write_text('{"name":"raven"}', encoding="utf-8")
     (root / "defaults").mkdir()
     (root / "defaults" / "openjarvis-portable.toml").write_text(
         'db_path = "__RAVEN_ROOT_ESCAPED__\\\\runtime\\\\openjarvis-memory.db"',
@@ -65,6 +68,8 @@ def test_clean_portable_excludes_owner_data_but_keeps_runtime(tmp_path: Path) ->
     run_portable(source, destination)
     assert (destination / "raven_control.py").is_file()
     assert (destination / "hud" / "index.html").is_file()
+    assert (destination / "desktop-electron" / "package.json").is_file()
+    assert not (destination / "desktop-electron" / "node_modules").exists()
     assert (destination / "runtime" / "ollama" / "ollama.exe").is_file()
     assert (destination / "runtime" / "ollama-models" / "blobs" / "sha256-test").read_bytes() == b"model-blob"
     assert not (destination / "runtime" / "cloud-api-secrets.json").exists()
