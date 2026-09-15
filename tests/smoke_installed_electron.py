@@ -124,6 +124,30 @@ def main() -> None:
                 "http://127.0.0.1:8126/settings",
                 test_settings,
             )
+            chat_ids_before = {str(item["id"]) for item in request_json("http://127.0.0.1:8126/chats").get("chats", [])}
+            hud.locator("#new-chat").click()
+            deadline = time.monotonic() + 10
+            created_chat_id = ""
+            while time.monotonic() < deadline:
+                current_ids = {str(item["id"]) for item in request_json("http://127.0.0.1:8126/chats").get("chats", [])}
+                added = current_ids - chat_ids_before
+                if len(added) == 1:
+                    created_chat_id = added.pop()
+                    break
+                time.sleep(0.1)
+            assert created_chat_id, "HUD nevytvořil testovací nedávný chat."
+            delete_button = hud.locator(f'[data-delete-chat="{created_chat_id}"]')
+            delete_button.wait_for(state="visible", timeout=10000)
+            delete_button.click()
+            hud.wait_for_function(
+                "id => !document.querySelector(`[data-delete-chat=\"${id}\"]`)",
+                arg=created_chat_id,
+                timeout=10000,
+            )
+            assert created_chat_id not in {
+                str(item["id"]) for item in request_json("http://127.0.0.1:8126/chats").get("chats", [])
+            }
+            print("Recent chat deletion passed", flush=True)
             create_result = request_json(
                 "http://127.0.0.1:8126/chat",
                 {

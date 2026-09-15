@@ -52,6 +52,21 @@ def test_local_planner_accepts_only_structured_computer_actions(monkeypatch) -> 
     assert plan["model"] == "qwen3.5:4b"
 
 
+def test_local_planner_supports_semantic_toggle(monkeypatch) -> None:
+    monkeypatch.setattr(raven_control.COMPUTER, "elements", lambda *_args: {
+        "window": {"title": "Nastavení", "process": "app.exe", "bounds": {}},
+        "backend": "uia", "count": 1,
+        "elements": [{"name": "Offline", "control_type": "CheckBox", "automation_id": "offline",
+                      "class_name": "", "enabled": True, "visible": True, "bounds": {}}],
+    })
+    monkeypatch.setattr(
+        raven_control, "local_model_request",
+        lambda *_args: '{"actions":[{"type":"element_toggle","selector":{"automation_id":"offline"}}],"summary":"Přepnu volbu."}',
+    )
+    plan = raven_control.plan_computer_task("Přepni volbu Offline", 123)
+    assert plan["actions"] == [{"type": "element_toggle", "selector": {"automation_id": "offline"}}]
+
+
 def test_local_planner_rejects_unapproved_action(monkeypatch) -> None:
     monkeypatch.setattr(raven_control.COMPUTER, "elements", lambda *_args: {
         "window": {"title": "Test", "process": "test.exe", "bounds": {}},

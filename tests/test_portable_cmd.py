@@ -28,6 +28,8 @@ def test_portable_validation_preserves_the_requested_drive_letter() -> None:
 
     assert "[IO.Path]::GetFullPath($PortableRoot)" in validation
     assert "Resolve-Path -LiteralPath $PortableRoot" not in validation
+    assert "raven-cortex.sqlite3" in validation
+    assert "$savedPrivateState" in validation
 
 
 def test_launcher_requires_its_bundled_ollama() -> None:

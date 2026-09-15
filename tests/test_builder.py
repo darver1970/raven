@@ -98,6 +98,17 @@ def test_web_blueprint_requires_index() -> None:
         parse_blueprint({"name": "x", "kind": "web", "files": [{"path": "app.js", "content": "1"}]})
 
 
+@pytest.mark.parametrize("html,error", [
+    ('<html><body><script src="missing.js"></script></body></html>', "chybějící soubor"),
+    ('<html><body><script src="https://cdn.example/app.js"></script></body></html>', "vzdálený zdroj"),
+    ('<html><body><!-- TODO --></body></html>', "placeholder"),
+])
+def test_builder_rejects_broken_or_unfinished_offline_web(html, error, tmp_path):
+    blueprint = {"name": "bad", "kind": "web", "files": [{"path": "index.html", "content": html}]}
+    with pytest.raises(ValueError, match=error):
+        build_project("Create offline app", tmp_path / "bad", lambda *_: json.dumps(blueprint))
+
+
 @pytest.mark.skipif(os.environ.get("RAVEN_LIVE_BUILDER_TEST") != "1", reason="explicit live local-model builder test")
 def test_live_local_model_builds_valid_web_application(tmp_path: Path) -> None:
     import raven_control

@@ -127,6 +127,19 @@ def test_recovery_returns_only_dependency_ready_steps(tmp_path: Path) -> None:
     assert recovery["next_steps"][0]["id"] == "sandbox"
 
 
+def test_restart_requires_verification_before_replaying_running_operation(tmp_path: Path) -> None:
+    store = CortexStore(tmp_path / "cortex.sqlite3")
+    cortex = RavenCortex(store)
+    task = cortex.create_task("Oprav soubor a ověř ho", intent="coding", complexity="standard")
+    store.set_status(task["id"], "running")
+    store.claim_operation(task["id"], "inspect")
+    assert store.mark_interrupted_operations() == 1
+    recovered = store.task(task["id"])
+    assert recovered["status"] == "needs_verification"
+    assert next(step for step in recovered["steps"] if step["id"] == "inspect")["status"] == "waiting_approval"
+    assert store.mark_interrupted_operations() == 0
+
+
 def test_blocked_steps_cannot_be_finalized_or_reexecuted(tmp_path):
     cortex = make_cortex(tmp_path)
     task = cortex.create_task("Odpověz", intent="chat")

@@ -11,8 +11,17 @@ if (-not (Test-Path -LiteralPath $portablePython -PathType Leaf)) { throw 'Porta
 if ($LASTEXITCODE -ne 0) { throw 'Portable screen, input or UI Automation dependencies are missing' }
 & $portablePython -c "import hardware_monitor as h; d=h.snapshot(); assert d['online']; assert d['system_usage'].get('cpu_percent') is not None; assert d['system_usage'].get('memory_percent') is not None; assert d['disks']; assert d['processes']"
 if ($LASTEXITCODE -ne 0) { throw 'Portable native telemetry fallback is not functional' }
-$settingsPath = Join-Path $root 'runtime\raven-settings.json'
-$savedSettings = if(Test-Path -LiteralPath $settingsPath){[IO.File]::ReadAllBytes($settingsPath)}else{$null}
+$privateStateNames = @(
+    'active-provider.json', 'raven-agents.json', 'raven-brain-tasks.json', 'raven-chats.json',
+    'raven-cortex.sqlite3', 'raven-cortex.sqlite3-shm', 'raven-cortex.sqlite3-wal',
+    'raven-learning.sqlite3', 'raven-learning.sqlite3-shm', 'raven-learning.sqlite3-wal',
+    'raven-settings.json', 'raven-task-history.json'
+)
+$savedPrivateState = @{}
+foreach($name in $privateStateNames){
+    $path = Join-Path $root "runtime\$name"
+    $savedPrivateState[$name] = if(Test-Path -LiteralPath $path -PathType Leaf){[IO.File]::ReadAllBytes($path)}else{$null}
+}
 $testProfile = Join-Path $root ('runtime\portable-qa-' + [Guid]::NewGuid().ToString('N'))
 $oldProfile=$env:RAVEN_ELECTRON_PROFILE
 $oldPort=$env:RAVEN_DEBUG_PORT
@@ -36,7 +45,15 @@ try {
     if($LASTEXITCODE -ne 0){throw 'Portable end-to-end validation failed'}
 } finally {
     try { & (Join-Path $root 'stop-raven.ps1') -InstallRoot $root -TimeoutSeconds 30 } catch { Write-Warning $_.Exception.Message }
-    if($null -ne $savedSettings){[IO.File]::WriteAllBytes($settingsPath,$savedSettings)}
+    foreach($name in $privateStateNames){
+        $path = Join-Path $root "runtime\$name"
+        $bytes = $savedPrivateState[$name]
+        if($null -ne $bytes){
+            [IO.File]::WriteAllBytes($path,$bytes)
+        } elseif(Test-Path -LiteralPath $path -PathType Leaf){
+            Remove-Item -LiteralPath $path -Force
+        }
+    }
     $env:RAVEN_ELECTRON_PROFILE=$oldProfile
     $env:RAVEN_DEBUG_PORT=$oldPort
     $env:PATH=$oldPath

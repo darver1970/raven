@@ -1293,7 +1293,8 @@ def plan_computer_task(instruction: str, hwnd: Any, model: str = "", correction:
         "Jsi lokální Planner Ravenu pro ovládání jednoho již vybraného okna Windows. "
         "Vrať POUZE JSON objekt bez markdownu ve tvaru "
         "{\"actions\":[...],\"summary\":\"...\"}. Povolené akce jsou: "
-        "element_click se selector{index,name,automation_id,control_type}; element_set_value se selector a text; "
+        "element_click, element_select, element_toggle, element_expand nebo element_collapse se selector{index,name,automation_id,control_type}; "
+        "element_set_value se selector a text; "
         "type_text s text; key s key; chord s keys; scroll s amount -20..20; wait se seconds 0..10. "
         "Pokud je přiložen snímek a prvek ve stromu chybí, smíš použít click_relative, "
         "double_click_relative, right_click_relative, move_relative nebo drag_relative se souřadnicemi "
@@ -1311,7 +1312,7 @@ def plan_computer_task(instruction: str, hwnd: Any, model: str = "", correction:
                 "items": {
                     "type": "object",
                     "properties": {
-                        "type": {"type": "string", "enum": ["element_click", "element_set_value", "type_text", "key", "chord", "scroll", "wait", "click_relative", "double_click_relative", "right_click_relative", "move_relative", "drag_relative"]},
+                        "type": {"type": "string", "enum": ["element_click", "element_set_value", "element_select", "element_toggle", "element_expand", "element_collapse", "type_text", "key", "chord", "scroll", "wait", "click_relative", "double_click_relative", "right_click_relative", "move_relative", "drag_relative"]},
                         "selector": {
                             "type": "object",
                             "properties": {
@@ -1390,7 +1391,7 @@ def plan_computer_task(instruction: str, hwnd: Any, model: str = "", correction:
     actions = plan.get("actions") if isinstance(plan, dict) else None
     if not isinstance(actions, list) or len(actions) > 12:
         raise ValueError("Planner musí vrátit seznam nejvýše 12 akcí.")
-    allowed = {"element_click", "element_set_value", "type_text", "key", "chord", "scroll", "wait", "click_relative", "double_click_relative", "right_click_relative", "move_relative", "drag_relative"}
+    allowed = {"element_click", "element_set_value", "element_select", "element_toggle", "element_expand", "element_collapse", "type_text", "key", "chord", "scroll", "wait", "click_relative", "double_click_relative", "right_click_relative", "move_relative", "drag_relative"}
     editable = [item for item in elements if str(item.get("control_type", "")).casefold() in {"edit", "document"}
                 and item.get("enabled") is not False and item.get("visible") is True]
     normalized_actions: list[dict[str, Any]] = []
@@ -1407,7 +1408,7 @@ def plan_computer_task(instruction: str, hwnd: Any, model: str = "", correction:
                 raise ValueError("Cílové textové pole není jednoznačné; upřesni ho.")
             action = {"type": "element_set_value", "selector": {"index": editable[0]["index"]}, "text": str(action["text"])}
             kind = str(action["type"])
-        if kind in {"element_click", "element_set_value"}:
+        if kind in {"element_click", "element_set_value", "element_select", "element_toggle", "element_expand", "element_collapse"}:
             selector = action.get("selector")
             if not isinstance(selector, dict):
                 raise ValueError("Planner nevrátil platný selektor prvku.")
@@ -1731,7 +1732,14 @@ def recent_events(after: str = "", chat_id: str = "", task_id: str = "") -> list
     return values[index + 1:] if index >= 0 else values[-80:]
 
 
-def run_agent_stage(agent_id: str, prompt: str, operation: Any, *, requires_permission: bool = True) -> Any:
+def run_agent_stage(
+    agent_id: str,
+    prompt: str,
+    operation: Any,
+    *,
+    requires_permission: bool = True,
+    timeout_seconds: int = 1800,
+) -> Any:
     """Spusti skutecnou praci pres limitovanou agentni frontu."""
     settings = load_settings()
     task = AgentTask(
@@ -1740,6 +1748,7 @@ def run_agent_stage(agent_id: str, prompt: str, operation: Any, *, requires_perm
         # Rezim Zakazano omezuje nastroje, nikoli premysleni a bezny chat.
         permission_mode=str(settings.get("permission_mode", "confirm")) if requires_permission else "full",
         model="automatic",
+        timeout_seconds=max(1, min(7200, int(timeout_seconds))),
     )
 
     async def execute(_: AgentTask) -> Any:
@@ -2058,8 +2067,64 @@ def recover_agent_activity() -> None:
             agent["status"] = "paused"
             agent["current_step"] = "Předchozí běh byl přerušen; před pokračováním ověřte stav."
             changed = True
+    for task in payload.get("tasks", []):
+        if task.get("status") == "running":
+            task["status"] = "interrupted"
+            task["interrupted_at"] = datetime.now().isoformat(timespec="seconds")
+            completed = {
+                agent_id for agent_id, result in task.get("results", {}).items()
+                if isinstance(result, dict) and result.get("status") == "completed"
+            }
+            task["completed_agents"] = sorted(completed)
+            task["resume_agents"] = [agent_id for agent_id in task.get("agents", []) if agent_id not in completed]
+            changed = True
     if changed:
         save_document(AGENTS_PATH, payload)
+
+
+def resume_agent_task(task_id: str) -> dict[str, Any]:
+    """Resume only unfinished DAG nodes; completed nodes are never replayed."""
+    with AGENT_STATE_LOCK:
+        current = load_agents()
+        task = next((item for item in current.get("tasks", []) if item.get("id") == task_id), None)
+        if task is None:
+            raise ValueError("Agentní úkol nebyl nalezen.")
+        if task.get("status") not in {"interrupted", "failed"}:
+            raise ValueError("Pokračovat lze pouze v přerušeném nebo neúspěšném úkolu.")
+        completed = {
+            agent_id for agent_id, result in task.get("results", {}).items()
+            if isinstance(result, dict) and result.get("status") == "completed"
+        }
+        pending_ids = [str(agent_id) for agent_id in task.get("agents", []) if str(agent_id) not in completed]
+        if not pending_ids:
+            task["status"] = "completed"
+            task["completed_at"] = datetime.now().isoformat(timespec="seconds")
+            save_document(AGENTS_PATH, current)
+            return {"task_id": task_id, "status": "completed", "resumed_agents": []}
+        definitions = [agent_by_id(current["agents"], normalize_agent_id(agent_id)) for agent_id in pending_ids]
+        unavailable = [str(agent["id"]) for agent in definitions if agent.get("status") in {"disabled", "planned"}]
+        if unavailable:
+            raise ValueError("Nelze obnovit nedostupné agenty: " + ", ".join(unavailable))
+        waves = agent_dependency_waves(definitions)
+        for agent_id in pending_ids:
+            task.setdefault("results", {}).pop(agent_id, None)
+        task["completed_agents"] = sorted(completed)
+        task["resume_agents"] = pending_ids
+        task["dependency_waves"] = waves
+        task["status"] = "running"
+        task["resumed_at"] = datetime.now().isoformat(timespec="seconds")
+        first_wave = set(waves[0])
+        for agent in definitions:
+            agent["status"] = "working" if str(agent["id"]) in first_wave else "paused"
+            agent["progress"] = 5
+            agent["current_step"] = "Obnoveno" if str(agent["id"]) in first_wave else "Čeká na závislosti"
+            agent["current_task"] = str(task.get("task", ""))[:2000]
+        save_document(AGENTS_PATH, current)
+    threading.Thread(
+        target=execute_agent_dag, args=(task_id, str(task.get("task", "")), waves),
+        name=f"raven-dag-resume-{task_id[-8:]}", daemon=True,
+    ).start()
+    return {"task_id": task_id, "status": "running", "resumed_agents": pending_ids, "dependency_waves": waves}
 
 
 def load_agent_catalog() -> list[dict[str, Any]]:
@@ -2293,6 +2358,7 @@ def dispatch_agent_job(task: str, agent_ids: list[str]) -> dict[str, Any]:
         task_id = f"task-{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
         task_entry = {
             "id": task_id,
+            "task_type": "agent_dag",
             "task": clean_task,
             "agents": [str(agent["id"]) for agent in ready],
             "status": "running",
@@ -2941,7 +3007,12 @@ class Handler(BaseHTTPRequestHandler):
         elif request_path == "/chats":
             self.send_json(load_chats())
         elif request_path == "/tasks":
-            self.send_json(load_document(TASK_HISTORY_PATH, "tasks"))
+            history = load_document(TASK_HISTORY_PATH, "tasks").get("tasks", [])
+            agent_tasks = []
+            for item in load_agents().get("tasks", []):
+                if isinstance(item, dict):
+                    agent_tasks.append({"task_type": "agent_dag", **item})
+            self.send_json({"tasks": [*history, *agent_tasks]})
         elif request_path == "/agents":
             self.send_json(load_agents())
         elif request_path == "/agents/catalog":
@@ -3937,6 +4008,12 @@ class Handler(BaseHTTPRequestHandler):
                 logging.info("Spuštěn skutečný úkol %s pro %s agentů", result["task_id"], len(result["agents"]))
                 self.send_json(result)
                 return
+            if self.path == "/agents/tasks/resume":
+                require_permission(data, "pokračování přerušeného agentního úkolu")
+                if data.get("confirmed") is not True:
+                    raise ValueError("Pokračování přerušeného úkolu vyžaduje potvrzení.")
+                self.send_json(resume_agent_task(str(data.get("task_id", "")).strip()))
+                return
             if self.path == "/agents/openclaw/run":
                 task = str(data.get("task", "")).strip()
                 if not 1 <= len(task) <= 2000:
@@ -4010,6 +4087,7 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     clean_obsolete_memory()
     BRAIN.recover_interrupted()
+    CORTEX.store.mark_interrupted_operations()
     recover_agent_activity()
     server = ThreadingHTTPServer(("127.0.0.1", CONTROL_PORT), Handler)
 

@@ -20,6 +20,7 @@ class AgentTask(BaseModel):
     agent_id: str = Field(pattern=r"^[a-z0-9-]{2,48}$")
     permission_mode: str = "confirm"
     model: str = "automatic"
+    timeout_seconds: int = Field(default=1800, ge=1, le=7200)
 
     @field_validator("permission_mode")
     @classmethod
@@ -65,7 +66,7 @@ class AgentRuntime:
                 self.state.queued -= 1
                 self.state.active += 1
             try:
-                result = await asyncio.wait_for(operation(task), timeout=300)
+                result = await asyncio.wait_for(operation(task), timeout=task.timeout_seconds)
                 with self._state_lock:
                     self.state.completed += 1
                 return result

@@ -263,6 +263,42 @@ class CortexStore:
         ready = [step for step in task["steps"] if step["status"] not in {"passed", "skipped"} and set(step.get("depends_on", [])) <= passed]
         return {"task_id": task_id, "recoverable": True, "status": task["status"], "next_steps": ready[:3], "completed_steps": sorted(passed)}
 
+    def mark_interrupted_operations(self) -> int:
+        """Turn orphaned operations into an explicit verify-before-resume state."""
+        now = _now()
+        recovered = 0
+        with self._lock, self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                tasks = db.execute("SELECT id FROM cortex_tasks WHERE status='running'").fetchall()
+                for task_row in tasks:
+                    task_id = str(task_row["id"])
+                    running = db.execute(
+                        "SELECT id,data_json FROM cortex_steps WHERE task_id=?", (task_id,),
+                    ).fetchall()
+                    for row in running:
+                        data = json.loads(row["data_json"])
+                        if data.get("status") == "running":
+                            data["status"] = "waiting_approval"
+                            db.execute(
+                                "UPDATE cortex_steps SET data_json=?,updated_at=? WHERE task_id=? AND id=?",
+                                (json.dumps(data, ensure_ascii=False), now, task_id, row["id"]),
+                            )
+                    db.execute(
+                        "UPDATE cortex_tasks SET status='needs_verification',updated_at=? WHERE id=?",
+                        (now, task_id),
+                    )
+                    db.execute(
+                        "INSERT INTO cortex_events(task_id,event,data_json,created_at) VALUES(?,?,?,?)",
+                        (task_id, "process_interrupted", json.dumps({"resume_requires_verification": True}), now),
+                    )
+                    recovered += 1
+                db.execute("COMMIT")
+            except Exception:
+                db.execute("ROLLBACK")
+                raise
+        return recovered
+
     def claim_operation(self, task_id: str, step_id: str) -> None:
         """Atomically claim a production operation before any side effects."""
         with self._lock, self.connect() as db:

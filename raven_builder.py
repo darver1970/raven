@@ -8,13 +8,14 @@ import json
 import re
 import subprocess
 import tempfile
+import xml.etree.ElementTree as ET
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
 from pydantic import BaseModel, Field
 
 
-ALLOWED_SUFFIXES = {".html", ".css", ".js", ".json", ".md", ".txt", ".py"}
+ALLOWED_SUFFIXES = {".html", ".css", ".js", ".json", ".md", ".txt", ".py", ".svg"}
 MAX_FILES = 48
 MAX_FILE_CHARS = 120_000
 MAX_TOTAL_CHARS = 2_000_000
@@ -149,6 +150,7 @@ def build_project(
 
 def validate_project(root: Path, blueprint: ApplicationBlueprint, *, node_binary: str = "node") -> dict[str, Any]:
     checks: list[dict[str, Any]] = []
+    known_files = {item.path.casefold() for item in blueprint.files}
     for item in blueprint.files:
         target = root.joinpath(*PurePosixPath(item.path).parts)
         suffix = target.suffix.lower()
@@ -165,8 +167,24 @@ def validate_project(root: Path, blueprint: ApplicationBlueprint, *, node_binary
                 content = target.read_text(encoding="utf-8").lower()
                 if not all(token in content for token in ("<html", "<body", "</body>", "</html>")):
                     raise ValueError("HTML dokument není úplný.")
+                for reference in re.findall(r'''(?:src|href)\s*=\s*["']([^"']+)["']''', content, re.IGNORECASE):
+                    clean = reference.split("#", 1)[0].split("?", 1)[0].strip()
+                    if not clean or clean.startswith(("#", "data:", "mailto:")):
+                        continue
+                    if re.match(r"(?i)^(?:https?:)?//", clean):
+                        raise ValueError(f"Offline aplikace odkazuje na vzdálený zdroj: {reference}")
+                    combined = (PurePosixPath(item.path).parent / clean).as_posix()
+                    relative = safe_file_path(combined)
+                    if relative.casefold() not in known_files:
+                        raise ValueError(f"HTML odkazuje na chybějící soubor: {reference}")
+            elif suffix == ".svg":
+                ET.fromstring(target.read_text(encoding="utf-8"))
+            if suffix in {".html", ".css", ".js", ".py"}:
+                content = target.read_text(encoding="utf-8")
+                if re.search(r"(?i)\b(?:TODO|TBD|PLACEHOLDER|YOUR[_ -]API[_ -]KEY)\b", content):
+                    raise ValueError("Soubor obsahuje nedokončený placeholder.")
             checks.append({"path": item.path, "passed": True, "message": "syntax-ok"})
-        except (OSError, ValueError, SyntaxError, subprocess.SubprocessError) as error:
+        except (OSError, ValueError, SyntaxError, ET.ParseError, subprocess.SubprocessError) as error:
             checks.append({"path": item.path, "passed": False, "message": str(error)[:500]})
     return {"passed": bool(checks) and all(item["passed"] for item in checks), "checks": checks}
 

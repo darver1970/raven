@@ -25,14 +25,53 @@ def test_agent_event_does_not_display_inactive_work_as_running(monkeypatch, even
 
 
 def test_backend_restart_marks_old_work_as_interrupted(monkeypatch):
-    payload = {"agents": [{"id": "tester", "status": "working"}, {"id": "files", "status": "ready"}]}
+    payload = {
+        "agents": [{"id": "tester", "status": "working"}, {"id": "files", "status": "ready"}],
+        "tasks": [{
+            "id": "task-old", "status": "running", "agents": ["files", "tester"],
+            "results": {"files": {"status": "completed"}}, "completed_agents": ["files"],
+        }],
+    }
     monkeypatch.setattr(raven_control, "load_agents", lambda: payload)
     saved = []
     monkeypatch.setattr(raven_control, "save_document", lambda *args: saved.append(True))
     raven_control.recover_agent_activity()
     assert payload["agents"][0]["status"] == "paused"
     assert payload["agents"][1]["status"] == "ready"
+    assert payload["tasks"][0]["status"] == "interrupted"
+    assert payload["tasks"][0]["resume_agents"] == ["tester"]
     assert saved == [True]
+
+
+def test_resume_agent_task_never_replays_completed_agent(monkeypatch):
+    payload = {
+        "agents": [
+            {"id": "planner", "status": "ready", "dependencies": []},
+            {"id": "tester", "status": "paused", "dependencies": ["planner"]},
+        ],
+        "tasks": [{
+            "id": "task-1", "task": "ověř výsledek", "status": "interrupted",
+            "agents": ["planner", "tester"], "completed_agents": ["planner"],
+            "results": {"planner": {"status": "completed", "answer": "done"}},
+        }],
+    }
+    started = []
+
+    class FakeThread:
+        def __init__(self, *, target, args, **_kwargs):
+            started.append((target, args))
+
+        def start(self):
+            return None
+
+    monkeypatch.setattr(raven_control, "load_agents", lambda: payload)
+    monkeypatch.setattr(raven_control, "save_document", lambda *_args: None)
+    monkeypatch.setattr(raven_control.threading, "Thread", FakeThread)
+    result = raven_control.resume_agent_task("task-1")
+    assert result["resumed_agents"] == ["tester"]
+    assert payload["tasks"][0]["completed_agents"] == ["planner"]
+    assert payload["agents"][1]["status"] == "working"
+    assert started[0][1][2] == [["tester"]]
 
 
 def test_router_reports_actual_provider_before_fallback_request(monkeypatch):
@@ -81,6 +120,22 @@ def test_chat_preserves_message_identity_details_and_feedback(tmp_path: Path, mo
     assert messages[1]["feedback"] == {
         "id": "c" * 32, "rating": 1, "approved_for_training": False,
     }
+
+
+def test_recent_chat_can_be_deleted_and_active_chat_moves(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(raven_control, "CHATS_PATH", tmp_path / "chats.json")
+    first = raven_control.save_chat({"id": "a" * 32, "title": "První", "messages": []})
+    raven_control.save_chat({"id": "b" * 32, "title": "Druhý", "messages": []})
+    result = raven_control.delete_chat("b" * 32)
+    assert [chat["id"] for chat in result["chats"]] == ["a" * 32]
+    assert result["active_chat_id"] == "a" * 32
+    assert first["chats"][0]["title"] == "První"
+
+
+def test_recent_chat_ui_has_real_delete_action() -> None:
+    source = (ROOT / "hud" / "hud.js").read_text(encoding="utf-8")
+    assert "data-delete-chat" in source
+    assert 'post("/chats/delete",{id:chat.id,confirmed:true})' in source
 
 
 def test_system_prompt_forbids_invented_provider_state() -> None:
@@ -342,6 +397,11 @@ def test_forbidden_model_is_rejected(model: str) -> None:
 
 def test_agent_runtime_never_allows_more_than_two_heavy_agents() -> None:
     assert AgentRuntime(limit=99).limit == 2
+
+
+def test_agent_runtime_accepts_long_checkpointed_operations() -> None:
+    task = AgentTask(prompt="dlouhý úkol", agent_id="tester", timeout_seconds=3600)
+    assert task.timeout_seconds == 3600
 
 
 def test_agent_dependency_waves_are_real_dag_order() -> None:

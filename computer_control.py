@@ -440,6 +440,20 @@ class ComputerController:
             except Exception:
                 element.click_input()
             return {"type": kind, "element": str(info.name or info.control_type or "")[:200]}
+        if kind in {"element_select", "element_toggle", "element_expand", "element_collapse"}:
+            operation = {
+                "element_select": "select",
+                "element_toggle": "toggle",
+                "element_expand": "expand",
+                "element_collapse": "collapse",
+            }[kind]
+            try:
+                getattr(element, operation)()
+            except Exception as error:
+                raise ComputerControlError(
+                    f"Prvek nepodporuje sémantickou akci {operation}."
+                ) from error
+            return {"type": kind, "element": str(info.name or info.control_type or "")[:200]}
         try:
             element.set_edit_text(text)
         except Exception:
@@ -528,7 +542,7 @@ class ComputerController:
             self._send(self._unicode_inputs(text))
             return {"type": kind, "characters": len(text),
                     "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest()}
-        if kind in {"element_click", "element_set_value"}:
+        if kind in {"element_click", "element_set_value", "element_select", "element_toggle", "element_expand", "element_collapse"}:
             text = str(action.get("text", ""))
             if len(text) > 8000:
                 raise ComputerControlError("Hodnota prvku smí mít nejvýše 8000 znaků.")
@@ -674,7 +688,8 @@ class ComputerController:
             "last_result": self._last_result,
             "capabilities": ["screenshots", "windows", "focus", "application-launch", "mouse", "keyboard",
                              "semantic-elements", "sequences", "before-after-verification", "emergency-stop",
-                             "audit", "accessibility-tree", "window-relative-visual-actions"],
+                             "audit", "accessibility-tree", "window-relative-visual-actions", "semantic-select",
+                             "semantic-toggle", "semantic-expand-collapse"],
         }
 
     @staticmethod
