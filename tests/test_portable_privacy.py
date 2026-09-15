@@ -23,6 +23,9 @@ def make_source(root: Path) -> None:
     (root / "desktop-electron" / "node_modules" / "dev-only").mkdir(parents=True)
     (root / "desktop-electron" / "node_modules" / "dev-only" / "index.js").write_text("dev", encoding="utf-8")
     (root / "desktop-electron" / "package.json").write_text('{"name":"raven"}', encoding="utf-8")
+    (root / "desktop").mkdir()
+    (root / "desktop" / "Raven.exe").write_bytes(b"obsolete duplicate")
+    (root / "desktop" / "Raven-Desktop.exe").write_bytes(b"current desktop")
     (root / "defaults").mkdir()
     (root / "defaults" / "openjarvis-portable.toml").write_text(
         'db_path = "__RAVEN_ROOT_ESCAPED__\\\\runtime\\\\openjarvis-memory.db"',
@@ -70,6 +73,8 @@ def test_clean_portable_excludes_owner_data_but_keeps_runtime(tmp_path: Path) ->
     assert (destination / "hud" / "index.html").is_file()
     assert (destination / "desktop-electron" / "package.json").is_file()
     assert not (destination / "desktop-electron" / "node_modules").exists()
+    assert (destination / "desktop" / "Raven-Desktop.exe").is_file()
+    assert not (destination / "desktop" / "Raven.exe").exists()
     assert (destination / "runtime" / "ollama" / "ollama.exe").is_file()
     assert (destination / "runtime" / "ollama-models" / "blobs" / "sha256-test").read_bytes() == b"model-blob"
     assert not (destination / "runtime" / "cloud-api-secrets.json").exists()

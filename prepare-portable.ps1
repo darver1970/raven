@@ -30,7 +30,7 @@ function Copy-TreeOverlay([string]$From, [string]$To, [string[]]$ExcludedDirecto
     if (-not (Test-Path -LiteralPath $From -PathType Container)) { return }
     New-Item -ItemType Directory -Path $To -Force | Out-Null
     $arguments = @($From, $To, '/E', '/COPY:DAT', '/DCOPY:DAT', '/R:2', '/W:1', '/XJ', '/NFL', '/NDL', '/NJH', '/NJS', '/NP')
-    $arguments += @('/XF', '.env', '.env.*', '.npmrc', 'hardware-status.json', 'network-status.json', 'voice-event.json', 'RAVEN-MAIN-PERSONAL.json', 'main-personal-drive.json')
+    $arguments += @('/XF', '.env', '.env.*', '.npmrc', 'hardware-status.json', 'network-status.json', 'voice-event.json', 'RAVEN-MAIN-PERSONAL.json', 'main-personal-drive.json', 'Raven.exe')
     if ($ExcludedDirectories.Count) { $arguments += '/XD'; $arguments += $ExcludedDirectories }
     & robocopy.exe @arguments | Out-Null
     if ($LASTEXITCODE -gt 7) { throw "Kopírování selhalo kódem ${LASTEXITCODE}: $From" }
