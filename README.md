@@ -1,8 +1,8 @@
 # Raven 1.2
 
-## Portable verze 1.2.3 (15. září 2026)
+## Portable verze 1.2.4 (15. září 2026)
 
-Verze 1.2.3 dokončuje obnovu přerušených úloh bez opakování hotových kroků,
+Verze 1.2.4 dokončuje obnovu přerušených úloh bez opakování hotových kroků,
 přidává sémantické ovládání prvků Windows, opravuje mazání nedávných chatů
 a zpřísňuje kontrolu výstupů Builderu. Raven navíc nesmí měnit IP, DHCP, DNS,
 proxy, VPN, routy ani stav síťového adaptéru; síťová telemetrie je pouze čtecí.
@@ -137,7 +137,7 @@ Rozhraní a návrh pracovních postupů vycházejí z veřejně dostupných prin
 
 Před vydáním se kontroluje syntaxe Pythonu, PowerShellu a JavaScriptu, lokální API, souběh agentů, jednorázová potvrzení, zotavení úloh, načtení skutečného Electron rozhraní, psaní do editoru, historie, telemetrie, skutečný souborový nástroj přes chat, lokální odpověď modelu a čisté ukončení všech vlastních procesů. Raven si eviduje přesný proces své Ollamy a při ukončení nesmí zastavit cizí instanci. GitHub se aktualizuje pouze na výslovný pokyn uživatele.
 
-Aktuální lokální ověření Raven 1.2.3 ze dne 15. září 2026 zahrnuje 297 úspěšných automatických testů a pět záměrně přeskočených volitelných živých scénářů. Samostatně prošel živý lokální AI planner, celé HTTP → Cortex → ovládání Windows → ověření → audit, živý lokální Builder, rozšířený Electron smoke test včetně smazání nedávného chatu a ostrý start z C: i z hlavní portable flash. Finální flash proces běžel přímo ze stabilní cesty `Raven-1.2\desktop\Raven-Desktop.exe` a měl viditelné reagující okno.
+Aktuální lokální ověření Raven 1.2.4 ze dne 15. září 2026 zahrnuje 298 úspěšných automatických testů a pět záměrně přeskočených volitelných živých scénářů. Samostatně prošel živý lokální AI planner, celé HTTP → Cortex → ovládání Windows → ověření → audit, živý lokální Builder, rozšířený Electron smoke test včetně smazání nedávného chatu a ostrý start z C: i z hlavní portable flash. Finální flash proces běžel přímo ze stabilní cesty `Raven-1.2\desktop\Raven-Desktop.exe` a měl viditelné reagující okno.
 
 Výsledkem je přímý `desktop/Raven-Desktop.exe` uvnitř kompletní portable složky a kořenový grafický spouštěč `Raven Portable.exe`. Pro autoupdate release obsahuje `raven-portable-update.json` a odpovídající ověřený ZIP. Instalační EXE se nevytváří, dokud o něj uživatel výslovně nepožádá.
 

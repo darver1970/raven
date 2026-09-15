@@ -54,6 +54,8 @@ def test_gui_launcher_cannot_hang_on_hidden_script_error_popup() -> None:
     assert '11434/api/version\' -Seconds 120' in launcher
     assert "raven_control.py' -Seconds 120" in launcher
     assert "127.0.0.1:8126/settings' -Seconds 120" in launcher
+    assert 'control-$controlLogStamp.err.log' in launcher
+    assert 'control-$controlLogStamp.out.log' in launcher
     assert '$popup.Popup("$message`n`nPodrobnosti: $launcherLog", 0,' not in launcher
 
 

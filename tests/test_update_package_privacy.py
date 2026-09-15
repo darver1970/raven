@@ -1,3 +1,4 @@
+import ast
 import os
 import shutil
 import subprocess
@@ -5,6 +6,17 @@ import zipfile
 from pathlib import Path
 
 import pytest
+
+
+def test_update_packager_includes_all_local_backend_imports():
+    root = Path(__file__).resolve().parents[1]
+    script = (root / "build-portable-update.ps1").read_text(encoding="utf-8-sig")
+    tree = ast.parse((root / "raven_control.py").read_text(encoding="utf-8-sig"))
+    for item in ast.walk(tree):
+        if isinstance(item, ast.ImportFrom) and item.module:
+            name = item.module + ".py"
+            if (root / name).is_file():
+                assert f"'{name}'" in script, f"Portable update is missing {name}"
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows portable packager")

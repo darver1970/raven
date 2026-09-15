@@ -1,6 +1,6 @@
 # Raven 1.2 – centrum lokálních schopností
 
-## Portable verze 1.2.3 — 15. září 2026
+## Portable verze 1.2.4 — 15. září 2026
 
 - Přerušené více-krokové úlohy lze obnovit bez opakování již dokončených kroků.
 - Ovládání Windows nově používá i sémantické akce výběru, přepnutí, rozbalení a sbalení prvku.
@@ -9,6 +9,8 @@
 - Portable validační testy zachovávají uživatelské chaty, klíče, nastavení, projekty a databáze beze změny.
 - Přidána tvrdá ochrana proti příkazům měnícím IP, DHCP, DNS, proxy, VPN, routy nebo síťový adaptér; síťový monitor zůstává pasivní.
 - Pomalá flash už neselže na pevném 15sekundovém limitu startu řídicí služby; launcher čeká až 120 sekund a stav zapisuje do logu.
+- Opraven neúplný update ZIP: `raven_network.py` a `raven_tools.py` jsou povinně přibalené a úplnost lokálních backend importů hlídá automatický test.
+- Standardní výstup i chyba řídicí služby se zapisují do samostatných souborů `control-*.out.log` a `control-*.err.log`.
 - Vydání obsahuje pouze zdrojový kód a ověřený portable aktualizační překryv; instalační EXE se nevytváří.
 
 ## Opravná verze 1.2.1 — 12. září 2026

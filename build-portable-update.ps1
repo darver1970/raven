@@ -30,7 +30,7 @@ $files = @(
     'CORTEX-STATUS.md', 'hardware_monitor.py', 'LICENSE', 'network_monitor.py', 'NOTICE',
     'prepare-portable.ps1', 'Raven Portable.exe', 'raven_brain.py', 'raven_builder.py', 'raven_control.py',
     'raven_cortex.py', 'raven_evals.py', 'raven_intelligence.py', 'raven_learning.py',
-    'raven_next.py', 'raven_updater.py', 'README.md', 'RELEASE_NOTES.md',
+    'raven_network.py', 'raven_next.py', 'raven_tools.py', 'raven_updater.py', 'README.md', 'RELEASE_NOTES.md',
     'SPUSTIT-RAVEN.cmd', 'spustit-raven.ps1', 'stop-raven.ps1',
     'telemetry_extensions.py', 'VERSION'
 )

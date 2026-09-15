@@ -273,7 +273,10 @@ $controlProcesses = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue 
 if (-not (Test-RavenPort -Port 8126 -ExpectedCommand 'raven_control.py') -or $controlProcesses) {
     $controlProcesses | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     Start-Sleep -Milliseconds 400
-    Start-Process -FilePath "$root\src\.venv\Scripts\python.exe" -ArgumentList 'raven_control.py' -WorkingDirectory $root -WindowStyle Hidden
+    $controlLogStamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
+    Start-Process -FilePath "$root\src\.venv\Scripts\python.exe" -ArgumentList 'raven_control.py' -WorkingDirectory $root -WindowStyle Hidden `
+        -RedirectStandardOutput (Join-Path $logDirectory "control-$controlLogStamp.out.log") `
+        -RedirectStandardError (Join-Path $logDirectory "control-$controlLogStamp.err.log")
     Wait-RavenPort -Port 8126 -ExpectedCommand 'raven_control.py' -Seconds 120
 }
 Wait-RavenHttp -Uri 'http://127.0.0.1:8126/settings' -Seconds 120
