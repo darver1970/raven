@@ -90,6 +90,7 @@ def test_router_reports_actual_provider_before_fallback_request(monkeypatch):
     assert (provider, answer) == ("local", "42")
     assert events == [("gemini_free", "request"), ("local", "request")]
     assert len(fallbacks) == 1
+import raven_intelligence
 from raven_intelligence import detect_local_file_action, execute_file_action
 
 
@@ -97,7 +98,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def test_version_is_one_two() -> None:
-    assert (ROOT / "VERSION").read_text(encoding="utf-8").strip() in {"1.2", "v1.2", "1.2.1", "v1.2.1", "1.2.2", "v1.2.2", "1.2.3", "v1.2.3", "1.2.4", "v1.2.4"}
+    assert (ROOT / "VERSION").read_text(encoding="utf-8").strip() in {"1.2", "v1.2", "1.2.1", "v1.2.1", "1.2.2", "v1.2.2", "1.2.3", "v1.2.3", "1.2.4", "v1.2.4", "1.2.5", "v1.2.5"}
 
 
 def test_chat_preserves_message_identity_details_and_feedback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -468,6 +469,26 @@ def test_czech_desktop_file_request_has_exact_filename() -> None:
     assert action is not None
     assert Path(action["path"]).name == "test.txt"
     assert Path(action["path"]).parent.name.lower() in {"desktop", "plocha"}
+
+
+@pytest.mark.parametrize("wording", ["na ploše", "na plose", "na plochu", "do plochy", "na desktopu"])
+def test_desktop_folder_request_uses_effective_known_folder(tmp_path: Path, monkeypatch, wording: str) -> None:
+    redirected = tmp_path / "OneDrive" / "Plocha"
+    redirected.mkdir(parents=True)
+    monkeypatch.setattr(raven_intelligence, "known_desktop", lambda: redirected)
+
+    action = detect_local_file_action(f'Vytvoř složku "Raven pokus" {wording}')
+
+    assert action is not None
+    assert action["action"] == "create_directory"
+    assert Path(action["path"]) == (redirected / "Raven pokus").resolve()
+
+
+def test_unquoted_desktop_folder_name_is_preserved(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(raven_intelligence, "known_desktop", lambda: tmp_path)
+    action = detect_local_file_action("Udělej složku Raven test na plochu")
+    assert action is not None
+    assert Path(action["path"]) == (tmp_path / "Raven test").resolve()
 
 
 def test_multiline_fenced_html_content_is_preserved(tmp_path: Path) -> None:

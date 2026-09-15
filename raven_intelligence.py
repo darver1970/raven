@@ -200,9 +200,26 @@ def search_library(query: str, limit: int = 8) -> dict[str, Any]:
 
 
 def known_desktop() -> Path:
+    # Windows stores the effective Desktop known-folder location here, including
+    # OneDrive and administrator redirects. USERPROFILE\Desktop is only a
+    # fallback and may be a different, invisible directory.
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders",
+        ) as key:
+            configured = str(winreg.QueryValueEx(key, "Desktop")[0]).strip()
+        if configured:
+            desktop = Path(os.path.expandvars(configured)).expanduser()
+            if desktop.is_dir():
+                return desktop.resolve()
+    except (ImportError, OSError, TypeError, ValueError):
+        pass
     candidates = [
-        Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Desktop",
         Path(os.environ.get("OneDrive", "")) / "Desktop" if os.environ.get("OneDrive") else Path("__missing__"),
+        Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Desktop",
         Path.home() / "Plocha",
     ]
     for path in candidates:
@@ -211,6 +228,27 @@ def known_desktop() -> Path:
     desktop = candidates[0]
     desktop.mkdir(parents=True, exist_ok=True)
     return desktop.resolve()
+
+
+def _mentions_desktop(text: str) -> bool:
+    return bool(re.search(r"\b(?:ploše|plose|plochu|plocha|plochy|desktop|desktopu)\b", text, re.IGNORECASE))
+
+
+def _extract_folder_name(text: str) -> str:
+    quoted = re.search(r"[`\"']([^`\"']+)[`\"']", text)
+    if quoted:
+        value = quoted.group(1)
+    else:
+        match = re.search(
+            r"\b(?:složku|slozku|adresář|adresar|folder|directory)\b\s+"
+            r"(?:(?:s\s+názvem|s\s+nazvem|nazvanou|pojmenovanou)\s+)?"
+            r"(.+?)(?=\s+(?:na|do|v)\s+(?:ploše|plose|plochu|plochy|desktop|desktopu)\b|$)",
+            text,
+            re.IGNORECASE,
+        )
+        value = match.group(1) if match else "Nova slozka"
+    value = re.sub(r'[\\/:*?"<>|]', "-", value).strip().strip(".")[:100]
+    return value or "Nova slozka"
 
 
 def _extract_filename(prompt: str) -> str:
@@ -253,15 +291,14 @@ def detect_local_file_action(prompt: str) -> dict[str, Any] | None:
         absolute = re.search(r"([A-Za-z]:\\[^\s\r\n<>|?*\"]+\.[A-Za-z0-9]{1,8})", text)
     filename = _extract_filename(text)
     if is_folder and create:
-        quoted_folder = re.search(r"[`\"']([^`\"']+)[`\"']", text)
-        folder_name = Path(quoted_folder.group(1)).name if quoted_folder else "Nova slozka"
-        target = (known_desktop() if any(word in lower for word in ("ploše", "plose", "desktop")) else ROOT) / folder_name
+        folder_name = _extract_folder_name(text)
+        target = (known_desktop() if _mentions_desktop(lower) else ROOT) / folder_name
         return {"action": "create_directory", "path": str(target.resolve())}
     if Path(filename).suffix.lower() not in SAFE_WRITE_EXTENSIONS:
         raise ValueError("Raven muze timto bezpecnym nastrojem pracovat pouze s textovymi soubory.")
     if absolute:
         target = Path(absolute.group(1).strip())
-    elif any(word in lower for word in ("ploše", "plose", "desktop")):
+    elif _mentions_desktop(lower):
         target = known_desktop() / filename
     else:
         target = ROOT / filename
