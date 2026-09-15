@@ -97,7 +97,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def test_version_is_one_two() -> None:
-    assert (ROOT / "VERSION").read_text(encoding="utf-8").strip() in {"1.2", "v1.2", "1.2.1", "v1.2.1", "1.2.2", "v1.2.2"}
+    assert (ROOT / "VERSION").read_text(encoding="utf-8").strip() in {"1.2", "v1.2", "1.2.1", "v1.2.1", "1.2.2", "v1.2.2", "1.2.3", "v1.2.3"}
 
 
 def test_chat_preserves_message_identity_details_and_feedback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

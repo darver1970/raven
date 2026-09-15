@@ -176,7 +176,7 @@ with sync_playwright() as playwright:
         "path => window.ravenDesktop.readFile(`${path}\\\\VERSION`)",
         root_path,
     )
-    assert version_file["content"].strip() in {"1.2", "v1.2", "1.2.1", "v1.2.1", "1.2.2", "v1.2.2"}
+    assert version_file["content"].strip() in {"1.2", "v1.2", "1.2.1", "v1.2.1", "1.2.2", "v1.2.2", "1.2.3", "v1.2.3"}
     terminal_state = hud.evaluate("window.ravenDesktop.terminal.create({})")
     terminal_id = terminal_state["terminals"][-1]["id"]
     hud.evaluate(

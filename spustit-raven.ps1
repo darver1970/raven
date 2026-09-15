@@ -227,7 +227,7 @@ if (-not (Test-RavenPort -Port 8000 -ExpectedCommand 'openjarvis.cli')) {
 Wait-RavenHttp -Uri 'http://127.0.0.1:8000/v1/agents/health' -Seconds 30
 if (-not (Test-RavenPort -Port 5174 -ExpectedCommand 'http.server')) {
     Start-Process -FilePath $pythonPath -ArgumentList '-m', 'http.server', '5174', '--bind', '127.0.0.1' -WorkingDirectory "$root\hud" -WindowStyle Hidden
-    Wait-RavenPort -Port 5174 -ExpectedCommand 'http.server' -Seconds 10
+    Wait-RavenPort -Port 5174 -ExpectedCommand 'http.server' -Seconds 60
 }
 # Senzory CPU/GPU/disků: program, konfigurace, log i API zůstávají v instalační složce.
 $hardwarePath = Get-ChildItem -Path "$root\runtime\librehardwaremonitor" -Filter "LibreHardwareMonitor.exe" -File -Recurse -ErrorAction SilentlyContinue |
@@ -247,7 +247,7 @@ if ($hardwarePath -and -not $hardwareProcess -and $isAdministrator) {
 } elseif ($hardwarePath -and -not $hardwareProcess) {
     Write-Warning "LibreHardwareMonitor vyžaduje spuštění launcheru jako správce; pokračuji bez něj."
 }
-Wait-RavenHttp -Uri 'http://127.0.0.1:5174/' -Seconds 10
+Wait-RavenHttp -Uri 'http://127.0.0.1:5174/' -Seconds 60
 $telemetryProcess = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
     Where-Object {
         $_.Name -eq "python.exe" -and
@@ -274,9 +274,9 @@ if (-not (Test-RavenPort -Port 8126 -ExpectedCommand 'raven_control.py') -or $co
     $controlProcesses | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     Start-Sleep -Milliseconds 400
     Start-Process -FilePath "$root\src\.venv\Scripts\python.exe" -ArgumentList 'raven_control.py' -WorkingDirectory $root -WindowStyle Hidden
-    Wait-RavenPort -Port 8126 -ExpectedCommand 'raven_control.py' -Seconds 15
+    Wait-RavenPort -Port 8126 -ExpectedCommand 'raven_control.py' -Seconds 120
 }
-Wait-RavenHttp -Uri 'http://127.0.0.1:8126/settings' -Seconds 15
+Wait-RavenHttp -Uri 'http://127.0.0.1:8126/settings' -Seconds 120
 
 $networkProcess = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
     Where-Object {

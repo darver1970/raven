@@ -136,6 +136,28 @@ def test_apply_stage_refuses_changed_staged_file(tmp_path: Path) -> None:
     assert not (root / "README.md").exists()
 
 
+def test_apply_stage_skips_identical_program_files(tmp_path: Path) -> None:
+    root = tmp_path / "Raven"
+    stage = root / "runtime" / "updates" / "stage-v1.3.0"
+    stage.mkdir(parents=True)
+    (root / "VERSION").write_text("v1.2\n", encoding="utf-8")
+    (root / "same.py").write_bytes(b"unchanged")
+    (stage / "same.py").write_bytes(b"unchanged")
+    (stage / "changed.py").write_bytes(b"new")
+    (root / "changed.py").write_bytes(b"old")
+    files = {"same.py": b"unchanged", "changed.py": b"new"}
+    pending = stage.parent / "pending.json"
+    pending.write_text(json.dumps({"stage": str(stage), "manifest": manifest_for(files)}), encoding="utf-8")
+
+    result = raven_updater.apply_stage(root, pending)
+
+    assert result["files"] == 1
+    assert result["unchanged"] == 1
+    assert "same.py" not in result["replaced"]
+    assert not (Path(result["backup"]) / "same.py").exists()
+    assert (root / "changed.py").read_bytes() == b"new"
+
+
 def test_version_comparison_does_not_treat_same_release_as_update(monkeypatch) -> None:
     release = {"assets": [
         {"name": raven_updater.MANIFEST_ASSET, "browser_download_url": "https://example.test/manifest"},

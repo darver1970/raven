@@ -345,16 +345,30 @@ def apply_stage(root: Path, pending_path: Path | None = None) -> dict[str, Any]:
         raise ValueError("Připravená aktualizace není v bezpečné pracovní složce.")
     for relative, digest in manifest["files"].items():
         source = contained_path(stage, relative)
-        contained_path(root, relative)
+        destination = contained_path(root, relative)
         if not source.is_file() or _sha256(source) != digest:
             raise ValueError(f"Připravený soubor neprošel kontrolou: {relative}")
+        if destination.exists() and not destination.is_file():
+            raise ValueError(f"Cíl aktualizace není soubor: {relative}")
+
+    changed_files = [
+        relative for relative, digest in manifest["files"].items()
+        if not contained_path(root, relative).is_file() or _sha256(contained_path(root, relative)) != digest
+    ]
+    expected_version = f"v{manifest['version']}\n"
+    version_path = contained_path(root, "VERSION")
+    try:
+        version_changed = version_path.read_text(encoding="utf-8-sig") != expected_version
+    except OSError:
+        version_changed = True
 
     backup = contained_path(root, "runtime/update-backups") / f"before-v{manifest['version']}-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}"
     backup.mkdir(parents=True, exist_ok=False)
     created: list[str] = []
     replaced: list[str] = []
     # Prepare every backup before the first program-file mutation.
-    for relative in dict.fromkeys([*manifest["files"], "VERSION"]):
+    backup_candidates = [*changed_files, *(["VERSION"] if version_changed else [])]
+    for relative in dict.fromkeys(backup_candidates):
         destination = contained_path(root, relative)
         if destination.exists():
             saved = contained_path(backup, relative)
@@ -368,14 +382,15 @@ def apply_stage(root: Path, pending_path: Path | None = None) -> dict[str, Any]:
                "backup_hashes": {relative: _sha256(backup / relative) for relative in replaced}}
     atomic_json(journal_path, journal)
     try:
-        for relative in manifest["files"]:
+        for relative in changed_files:
             source = stage.joinpath(*PurePosixPath(relative).parts)
             destination = root.joinpath(*PurePosixPath(relative).parts)
             destination.parent.mkdir(parents=True, exist_ok=True)
             temporary = destination.with_name(destination.name + ".raven-new")
             shutil.copy2(source, temporary)
             os.replace(temporary, destination)
-        (root / "VERSION").write_text(f"v{manifest['version']}\n", encoding="utf-8")
+        if version_changed:
+            version_path.write_text(expected_version, encoding="utf-8")
     except Exception:
         for relative in created:
             root.joinpath(*PurePosixPath(relative).parts).unlink(missing_ok=True)
@@ -386,7 +401,11 @@ def apply_stage(root: Path, pending_path: Path | None = None) -> dict[str, Any]:
                 shutil.copy2(saved, destination)
         journal_path.unlink()
         raise
-    result = {"status": "applied", "version": manifest["version"], "backup": str(backup), "files": len(manifest["files"]), "created": created, "replaced": replaced, "completed_at": _now()}
+    result = {
+        "status": "applied", "version": manifest["version"], "backup": str(backup),
+        "files": len(changed_files), "unchanged": len(manifest["files"]) - len(changed_files),
+        "created": created, "replaced": replaced, "completed_at": _now(),
+    }
     result["backup_hashes"] = journal["backup_hashes"]
     atomic_json(root / "runtime" / "updates" / "last-result.json", result)
     journal_path.unlink()
