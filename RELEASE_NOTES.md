@@ -1,5 +1,15 @@
 # Raven 1.2 – centrum lokálních schopností
 
+## Portable verze 1.2.2 — 15. září 2026
+
+- Přerušené více-krokové úlohy lze obnovit bez opakování již dokončených kroků.
+- Ovládání Windows nově používá i sémantické akce výběru, přepnutí, rozbalení a sbalení prvku.
+- Opraveno skutečné mazání nedávných chatů v HUD a pokryto ostrým Electron testem.
+- Builder odmítne neúplné zástupné texty, rozbité lokální odkazy a vzdálené závislosti v offline aplikacích.
+- Portable validační testy zachovávají uživatelské chaty, klíče, nastavení, projekty a databáze beze změny.
+- Přidána tvrdá ochrana proti příkazům měnícím IP, DHCP, DNS, proxy, VPN, routy nebo síťový adaptér; síťový monitor zůstává pasivní.
+- Vydání obsahuje pouze zdrojový kód a ověřený portable aktualizační překryv; instalační EXE se nevytváří.
+
 ## Opravná verze 1.2.1 — 12. září 2026
 
 - Doplněny nativně dostupné údaje telemetrie: CPU takt, fyzická a logická jádra, celková RAM, stav baterie a napájení, doba běhu a síťový provoz.

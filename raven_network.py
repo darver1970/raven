@@ -59,6 +59,22 @@ NETWORK_COMMAND = re.compile(
 )
 URL_IN_TEXT = re.compile(r"https?://[^\s'\"`]+", re.IGNORECASE)
 
+# Raven may inspect connectivity, but it must never silently reconfigure the
+# host network. These commands can drop DHCP, replace DNS/gateway settings,
+# reset an adapter or enable a VPN/proxy and affect every program on the PC.
+NETWORK_RECONFIGURATION = re.compile(
+    r"(?ix)"
+    r"\bipconfig(?:\.exe)?\s+/(?:release|renew|flushdns|registerdns)\b|"
+    r"\bnetsh(?:\.exe)?\s+(?:interface|int|winsock|winhttp)\b.*\b(?:set|reset|add|delete)\b|"
+    r"\broute(?:\.exe)?\s+(?:add|change|delete)\b|"
+    r"\brasdial(?:\.exe)?\b|"
+    r"\b(?:set|new|remove)-net(?:ipaddress|ipinterface|route|adapter|adapterbinding)\b|"
+    r"\b(?:restart|disable|enable|rename|reset)-netadapter\b|"
+    r"\bset-dnsclient(?:serveraddress)?\b|"
+    r"\b(?:add|remove)-vpnconnection\b|"
+    r"\bset-itemproperty\b[^\r\n;|&]*(?:internet settings|proxyenable|proxyserver)"
+)
+
 
 def require_command_network(command: str, settings: dict[str, Any]) -> str:
     text = str(command or "")
@@ -68,3 +84,14 @@ def require_command_network(command: str, settings: dict[str, Any]) -> str:
     if urls and all(is_loopback_url(url.rstrip("),.;")) for url in urls):
         return text
     raise ValueError("Síťový příkaz je v offline nebo bezpečném režimu zablokovaný.")
+
+
+def prohibit_network_reconfiguration(command: str) -> str:
+    """Reject commands that could change host-wide IP, DNS, proxy or adapters."""
+    text = str(command or "")
+    if NETWORK_RECONFIGURATION.search(text):
+        raise ValueError(
+            "Raven nesmí měnit IP, DNS, proxy, VPN ani stav síťového adaptéru. "
+            "Síť může pouze sledovat; systémové změny proveďte ručně ve Windows."
+        )
+    return text

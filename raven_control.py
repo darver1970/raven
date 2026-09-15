@@ -43,7 +43,7 @@ from raven_brain import (
 )
 from raven_cortex import CORTEX, ContextItem, build_goal
 from raven_learning import LEARNING
-from raven_network import require_command_network, require_network_url
+from raven_network import prohibit_network_reconfiguration, require_command_network, require_network_url
 from raven_tools import ToolRegistry, ToolSpec
 from raven_evals import run_suite as run_cortex_eval_suite, shadow_compare
 from raven_intelligence import (
@@ -2614,6 +2614,7 @@ def command_result(result: subprocess.CompletedProcess[str], elevated: bool) -> 
 
 def run_powershell(command: str, elevated: bool) -> dict[str, Any]:
     """Spustí potvrzený příkaz; elevace vždy prochází Windows UAC."""
+    prohibit_network_reconfiguration(command)
     require_command_network(command, load_next_settings())
     if not elevated:
         result = subprocess.run(

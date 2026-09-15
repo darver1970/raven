@@ -74,7 +74,7 @@ def test_installer_includes_all_local_backend_imports() -> None:
     tree = ast.parse((ROOT / "raven_control.py").read_text(encoding="utf-8-sig"))
     # Instalační větev je na výslovný pokyn uživatele zmrazená. Nové moduly
     # portable produktu se ověřují v extraResources a portable validaci níže.
-    portable_only = {"computer_control.py", "raven_builder.py"}
+    portable_only = {"computer_control.py", "raven_builder.py", "raven_network.py", "raven_tools.py"}
     for item in ast.walk(tree):
         if isinstance(item, ast.ImportFrom) and item.module:
             name = item.module + ".py"
