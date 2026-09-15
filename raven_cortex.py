@@ -117,9 +117,12 @@ class ModelProfile(BaseModel):
 
 
 DEFAULT_MODELS = [
-    ModelProfile(id="qwen3.5:4b", provider="ollama", capabilities={"chat", "planning", "tools", "multilingual", "vision"}, min_ram_gb=6, context_tokens=32768, speed=0.82, quality=0.62),
+    ModelProfile(id="qwen3.5:0.8b", provider="ollama", capabilities={"chat", "classification", "summarization"}, min_ram_gb=2, context_tokens=32768, speed=0.98, quality=0.38),
+    ModelProfile(id="qwen3.5:2b", provider="ollama", capabilities={"chat", "classification", "summarization", "tools"}, min_ram_gb=4, context_tokens=32768, speed=0.92, quality=0.51),
+    ModelProfile(id="qwen3.5:4b", provider="ollama", capabilities={"chat", "planning", "reasoning", "tools", "multilingual"}, min_ram_gb=6, context_tokens=32768, speed=0.82, quality=0.64),
+    ModelProfile(id="qwen3-vl:4b", provider="ollama", capabilities={"vision", "chat", "tools", "multilingual"}, min_ram_gb=6, context_tokens=32768, speed=0.68, quality=0.67),
     ModelProfile(id="qwen3.5:9b", provider="ollama", capabilities={"chat", "planning", "reasoning", "tools", "multilingual", "vision", "verification"}, min_ram_gb=16, context_tokens=32768, speed=0.45, quality=0.79),
-    ModelProfile(id="qwen2.5-coder:7b", provider="ollama", capabilities={"coding", "tools", "debugging", "verification"}, min_ram_gb=12, context_tokens=32768, speed=0.52, quality=0.75),
+    ModelProfile(id="qwen2.5-coder:7b", provider="ollama", capabilities={"coding", "tools", "debugging", "verification"}, min_ram_gb=10, context_tokens=32768, speed=0.52, quality=0.75),
     ModelProfile(id="deepseek-r1:7b", provider="ollama", capabilities={"reasoning", "math", "planning", "verification"}, min_ram_gb=8, context_tokens=32768, speed=0.35, quality=0.73, enabled=False),
     ModelProfile(id="gemma3:4b", provider="ollama", capabilities={"chat", "vision", "multilingual", "summarization"}, min_ram_gb=6, context_tokens=32768, speed=0.7, quality=0.64, enabled=False),
 ]
@@ -404,18 +407,34 @@ class CapabilityRouter:
         self.store = store
         self.profiles = list(profiles)
 
-    def rank(self, capability: str, available: Iterable[str], ram_gb: float, prefer_local: bool = True) -> list[dict[str, Any]]:
+    def rank(
+        self, capability: str, available: Iterable[str], ram_gb: float, prefer_local: bool = True,
+        performance_profile: str = "balanced", complexity: str = "standard",
+    ) -> list[dict[str, Any]]:
         available_set = set(available)
         ranked = []
+        quality_weight, speed_weight = {
+            "economy": (0.12, 0.25), "quality": (0.3, 0.05), "coding": (0.28, 0.06),
+            "private": (0.2, 0.1), "balanced": (0.2, 0.1),
+        }.get(performance_profile, (0.2, 0.1))
+        if complexity == "complex":
+            quality_weight += 0.08
+            speed_weight = max(0.02, speed_weight - 0.05)
+        elif complexity == "simple":
+            quality_weight = max(0.08, quality_weight - 0.08)
+            speed_weight += 0.15
         for profile in self.profiles:
             if not profile.enabled or profile.id not in available_set or profile.min_ram_gb > ram_gb:
                 continue
             history = self.store.model_score(profile.id, capability)
             success_rate = history["successes"] / max(1, history["successes"] + history["failures"])
             capability_fit = 1.0 if capability in profile.capabilities else 0.2
-            score = capability_fit * 0.42 + profile.quality * 0.2 + profile.speed * 0.1 + history["quality"] * 0.13 + success_rate * 0.1 + (profile.privacy / 5) * 0.05
+            latency_penalty = min(0.12, float(history["latency_ms"] or 0) / 300_000)
+            score = capability_fit * 0.42 + profile.quality * quality_weight + profile.speed * speed_weight + history["quality"] * 0.13 + success_rate * 0.1 + (profile.privacy / 5) * 0.05 - latency_penalty
+            if complexity == "simple" and capability in {"chat", "classification", "summarization"}:
+                score += 0.05 if profile.id == "qwen3.5:2b" else 0.03 if profile.id == "qwen3.5:0.8b" else 0.0
             if prefer_local and profile.local: score += 0.05
-            ranked.append({"model": profile.id, "provider": profile.provider, "score": round(score, 4), "capability_fit": capability_fit, "history": history, "context_tokens": profile.context_tokens})
+            ranked.append({"model": profile.id, "provider": profile.provider, "score": round(score, 4), "capability_fit": capability_fit, "history": history, "context_tokens": profile.context_tokens, "performance_profile": performance_profile})
         return sorted(ranked, key=lambda item: item["score"], reverse=True)
 
 

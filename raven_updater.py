@@ -25,6 +25,24 @@ from contextlib import contextmanager
 from functools import wraps
 
 
+
+def _load_network_settings(root: Path) -> dict[str, Any]:
+    path = Path(root).resolve() / "runtime" / "raven-1.2-settings.json"
+    if not path.is_file():
+        return {}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return {"offline_mode": True, "safe_mode": True}
+    return value if isinstance(value, dict) else {"offline_mode": True, "safe_mode": True}
+
+
+def _require_network(value: str, root: Path, purpose: str) -> None:
+    settings = _load_network_settings(root)
+    if settings.get("offline_mode") is True or settings.get("safe_mode") is True:
+        raise ValueError(f"{purpose.capitalize()} je v offline nebo bezpečném režimu zablokovaná.")
+
+
 REPOSITORY = "darver1970/raven"
 RELEASE_API = f"https://api.github.com/repos/{REPOSITORY}/releases/latest"
 MANIFEST_ASSET = "raven-portable-update.json"
@@ -225,7 +243,9 @@ def contained_path(root: Path, relative: str) -> Path:
     return target
 
 
-def check(current_version: str, *, release_api: str = RELEASE_API) -> dict[str, Any]:
+def check(current_version: str, *, release_api: str = RELEASE_API, root: Path | None = None) -> dict[str, Any]:
+    if root is not None:
+        _require_network(release_api, root, "kontrola aktualizace")
     release = _json_url(release_api)
     assets = _release_assets(release)
     descriptor = assets.get(MANIFEST_ASSET)
@@ -246,6 +266,7 @@ def check(current_version: str, *, release_api: str = RELEASE_API) -> dict[str, 
 
 
 def download_and_stage(update: dict[str, Any], root: Path) -> dict[str, Any]:
+    _require_network(str(update.get("archive_url", "")), root, "stažení aktualizace")
     with update_lock(root):
         if contained_path(root, "runtime/updates/transaction.json").exists():
             raise ValueError("Před stažením další aktualizace je nutná recovery přerušené transakce.")
@@ -442,7 +463,7 @@ def main(argv: list[str] | None = None) -> int:
     values = parser.parse_args(argv)
     root = Path(values.root).resolve()
     if values.command == "check":
-        result = check(values.current)
+        result = check(values.current, root=root)
     elif values.command == "prepare":
         if not values.state:
             raise ValueError("Příkaz prepare vyžaduje --state.")

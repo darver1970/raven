@@ -23,6 +23,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from raven_network import is_loopback_url, offline_enabled, require_network_url
+
 
 ROOT = Path(__file__).resolve().parent
 RUNTIME = ROOT / "runtime"
@@ -262,6 +264,8 @@ def manage_ollama_model(data: dict[str, Any]) -> dict[str, Any]:
     model = str(data.get("model", "")).strip()
     if action not in {"pull", "remove"}:
         raise ValueError("Povolená akce modelu je pull nebo remove.")
+    if action == "pull" and offline_enabled(load_settings()):
+        raise ValueError("Stažení modelu je v offline nebo bezpečném režimu zablokované.")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{1,159}", model):
         raise ValueError("Neplatný název modelu.")
     executable = shutil.which("ollama")
@@ -341,6 +345,8 @@ def save_mcp_server(data: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Stdio MCP server potřebuje příkaz.")
     if transport == "http" and not re.match(r"^https?://", url):
         raise ValueError("HTTP MCP server potřebuje platnou adresu.")
+    if transport == "http" and not is_loopback_url(url):
+        require_network_url(url, load_settings(), "uložení vzdáleného MCP serveru")
     current = _read(MCP_PATH, "servers")
     servers = [item for item in current.get("servers", []) if isinstance(item, dict) and item.get("id") != server_id]
     entry = {

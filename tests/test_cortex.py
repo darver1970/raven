@@ -100,6 +100,16 @@ def test_capability_router_uses_ram_capability_and_history(tmp_path: Path) -> No
     assert improved[0]["history"]["successes"] == 1
 
 
+def test_capability_router_selects_fast_small_and_explicit_vision_models(tmp_path: Path) -> None:
+    router = CapabilityRouter(CortexStore(tmp_path / "cortex.sqlite3"))
+    available = {"qwen3.5:0.8b", "qwen3.5:2b", "qwen3.5:4b", "qwen3-vl:4b"}
+    economy = router.rank("classification", available, ram_gb=8, performance_profile="economy", complexity="simple")
+    assert economy[0]["model"] in {"qwen3.5:0.8b", "qwen3.5:2b"}
+    assert router.rank("chat", available, ram_gb=8, complexity="simple")[0]["model"] == "qwen3.5:2b"
+    vision = router.rank("vision", available, ram_gb=8, performance_profile="quality", complexity="complex")
+    assert vision[0]["model"] == "qwen3-vl:4b"
+
+
 def test_metacognition_stops_repeated_identical_failure() -> None:
     events = [{"event": "tool_failed", "data": {"reason": "same"}} for _ in range(3)]
     result = MetacognitiveMonitor().inspect(events)

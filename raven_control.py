@@ -26,6 +26,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from pydantic import BaseModel, ConfigDict, Field
+
 import hardware_monitor
 
 from agent_runtime import AgentTask, RUNTIME as AGENT_RUNTIME
@@ -41,6 +43,8 @@ from raven_brain import (
 )
 from raven_cortex import CORTEX, ContextItem, build_goal
 from raven_learning import LEARNING
+from raven_network import require_command_network, require_network_url
+from raven_tools import ToolRegistry, ToolSpec
 from raven_evals import run_suite as run_cortex_eval_suite, shadow_compare
 from raven_intelligence import (
     create_project_snapshot,
@@ -1227,18 +1231,37 @@ def automatic_provider_request(
     raise ValueError("Automatický režim nemohl získat odpověď z bezplatných poskytovatelů ani lokálního modelu.")
 
 
-def local_model_request(messages: list[dict[str, object]], model: str, format_schema: dict[str, Any] | None = None) -> str:
+def local_model_request(
+    messages: list[dict[str, object]], model: str, format_schema: dict[str, Any] | None = None,
+    *, capability: str = "chat", complexity: str = "standard",
+) -> str:
     """Use Raven's local Ollama directly; the generic gateway may time out on CPU."""
     selected = str(model or "").strip()
     if selected in {"", "automatic"} or selected.startswith("gemini-") or "/" in selected:
         selected = str(load_settings().get("default_model", "qwen3.5:4b"))
+    next_settings = load_next_settings()
+    performance_profile = str(next_settings.get("performance_profile", "balanced"))
+    requested_context = int(next_settings.get("context_budget_tokens", 8192) or 8192)
+    profile_context = {"economy": 4096, "balanced": 8192, "quality": 16384, "coding": 12288, "private": 8192}.get(performance_profile, 8192)
+    num_ctx = max(2048, min(16384, requested_context, profile_context))
+    if capability == "chat" and complexity != "complex" and performance_profile in {"economy", "balanced", "private"}:
+        num_ctx = min(num_ctx, 4096)
+    systems = [dict(item) for item in messages if item.get("role") == "system"]
+    recent = [dict(item) for item in messages if item.get("role") != "system"][-15:]
+    # Přibližný znakový rozpočet drží prompt pod num_ctx a nechává místo odpovědi.
+    character_budget = max(4000, (num_ctx - (1024 if format_schema else 768)) * 4)
+    selected_messages = systems + recent
+    while len(selected_messages) > len(systems) + 1 and sum(len(str(item.get("content", ""))) for item in selected_messages) > character_budget:
+        selected_messages.pop(len(systems))
+    num_predict = 1024 if format_schema else (768 if complexity == "complex" or performance_profile in {"quality", "coding"} else 512)
+    keep_alive = "5m" if performance_profile == "economy" else "30m" if performance_profile in {"quality", "coding"} else "15m"
     payload = {
         "model": selected[:120],
-        "messages": [*[item for item in messages if item.get("role") == "system"],
-                     *[item for item in messages if item.get("role") != "system"][-15:]],
+        "messages": selected_messages,
         "think": False,
         "stream": False,
-        "options": {"num_ctx": 4096, "num_predict": 1024 if format_schema else 512, "temperature": 0 if format_schema else 0.2},
+        "keep_alive": keep_alive,
+        "options": {"num_ctx": num_ctx, "num_predict": num_predict, "temperature": 0 if format_schema else 0.2, "num_thread": max(1, min(8, os.cpu_count() or 1))},
     }
     if format_schema:
         payload["format"] = format_schema
@@ -1310,9 +1333,12 @@ def plan_computer_task(instruction: str, hwnd: Any, model: str = "", correction:
         },
         "required": ["actions", "summary"],
     }
-    visual_requested = observation.get("backend") != "uia" or len(elements) < 3 or bool(re.search(
-        r"(?i)obraz|ikonu|menu|plátn|platn|canvas|vizuál|visual|souřad", instruction
-    ))
+    explicit_visual = bool(re.search(r"(?i)obraz|ikonu|menu|plátn|platn|canvas|vizuál|visual|souřad", instruction))
+    coordinate_visual_needed = observation.get("backend") != "uia" or explicit_visual
+    visual_requested = coordinate_visual_needed or len(elements) < 3
+    planner_model = str(model or "").strip()
+    if coordinate_visual_needed and planner_model in {"", "automatic", "qwen3.5:4b"}:
+        planner_model = "qwen3-vl:4b"
     user_message: dict[str, Any] = {"role": "user", "content": json.dumps({
         "instruction": instruction,
         "window": {key: observation["window"].get(key) for key in ("title", "process", "bounds")},
@@ -1334,7 +1360,13 @@ def plan_computer_task(instruction: str, hwnd: Any, model: str = "", correction:
     plan: Any = None
     parse_error: json.JSONDecodeError | None = None
     for attempt in range(2):
-        answer = local_model_request(planner_messages, model, schema)
+        try:
+            answer = local_model_request(planner_messages, planner_model, schema)
+        except ValueError:
+            if not visual_requested or planner_model == str(model or "").strip():
+                raise
+            planner_model = str(model or "").strip() or "qwen3.5:4b"
+            answer = local_model_request(planner_messages, planner_model, schema)
         json_text = answer.strip()
         fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", json_text, re.DOTALL | re.IGNORECASE)
         if fenced:
@@ -1436,7 +1468,8 @@ def plan_computer_task(instruction: str, hwnd: Any, model: str = "", correction:
     return {
         "instruction": instruction, "window": observation["window"], "actions": actions,
         "summary": str(plan.get("summary", ""))[:1000],
-        "model": str(model or load_settings().get("default_model", "qwen3.5:4b")),
+        "model": planner_model or str(load_settings().get("default_model", "qwen3.5:4b")),
+        "visual_input": visual_requested,
         "element_count": observation.get("count", 0),
         "accessibility_backend": observation.get("backend", "win32"),
     }
@@ -1486,8 +1519,7 @@ def provider_request(
     if provider == "local":
         return local_model_request(messages, model)
     next_settings = load_next_settings()
-    if next_settings.get("safe_mode") or next_settings.get("offline_mode"):
-        raise ValueError("Online poskytovatelé jsou vypnutí bezpečným nebo offline režimem Raven 1.2.")
+    require_network_url("https://provider.raven.invalid/", next_settings, "online AI")
     if provider == "codex_plus":
         if api_key is not None:
             raise ValueError("Codex přes ChatGPT Plus nepoužívá API klíč.")
@@ -2201,6 +2233,49 @@ def execute_agent_job(task_id: str, agent_id: str, task: str) -> None:
         emit_event("error", "error", agent=agent_id, task_id=task_id, error=str(error)[:500], result="Specializovaný úkol selhal")
 
 
+def agent_dependency_waves(agents: list[dict[str, Any]]) -> list[list[str]]:
+    """Vrátí skutečné DAG vlny; závislosti mimo vybranou větev řeší koordinátor."""
+    ids = {str(agent.get("id", "")) for agent in agents}
+    dependencies = {
+        str(agent["id"]): {str(item) for item in agent.get("dependencies", []) if str(item) in ids}
+        for agent in agents
+    }
+    waves: list[list[str]] = []
+    completed: set[str] = set()
+    while len(completed) < len(ids):
+        ready = sorted(agent_id for agent_id in ids - completed if dependencies.get(agent_id, set()) <= completed)
+        if not ready:
+            cycle = ", ".join(sorted(ids - completed))
+            raise ValueError(f"Závislosti agentů obsahují cyklus: {cycle}")
+        waves.append(ready)
+        completed.update(ready)
+    return waves
+
+
+def execute_agent_dag(task_id: str, task: str, waves: list[list[str]]) -> None:
+    """Spouští paralelně jen agenty stejné připravené vlny a blokuje potomky chyby."""
+    failed: set[str] = set()
+    selected = {agent_id for wave in waves for agent_id in wave}
+    definitions = {str(item["id"]): item for item in load_agents().get("agents", []) if str(item.get("id", "")) in selected}
+    for wave in waves:
+        runnable: list[str] = []
+        for agent_id in wave:
+            blocked_by = {str(value) for value in definitions.get(agent_id, {}).get("dependencies", [])} & failed
+            if blocked_by:
+                finish_agent_job(task_id, agent_id, None, "Zablokováno neúspěšnou závislostí: " + ", ".join(sorted(blocked_by)))
+                failed.add(agent_id)
+            else:
+                runnable.append(agent_id)
+        futures = [AGENT_JOB_POOL.submit(execute_agent_job, task_id, agent_id, task) for agent_id in runnable]
+        for future in futures:
+            future.result()
+        state = load_agents()
+        entry = next((item for item in state.get("tasks", []) if item.get("id") == task_id), {})
+        for agent_id in runnable:
+            if entry.get("results", {}).get(agent_id, {}).get("status") == "error":
+                failed.add(agent_id)
+
+
 def dispatch_agent_job(task: str, agent_ids: list[str]) -> dict[str, Any]:
     """Zařadí nejvýše šest připravených agentů do skutečné limitované fronty."""
     clean_task = str(task or "").strip()
@@ -2214,6 +2289,7 @@ def dispatch_agent_job(task: str, agent_ids: list[str]) -> dict[str, Any]:
         ready = [agent for agent in selected if agent.get("status") == "ready"]
         if not ready:
             raise ValueError("Žádný vybraný agent není připraven.")
+        waves = agent_dependency_waves(ready)
         task_id = f"task-{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
         task_entry = {
             "id": task_id,
@@ -2221,17 +2297,21 @@ def dispatch_agent_job(task: str, agent_ids: list[str]) -> dict[str, Any]:
             "agents": [str(agent["id"]) for agent in ready],
             "status": "running",
             "results": {},
+            "dependency_waves": waves,
             "created_at": datetime.now().isoformat(timespec="seconds"),
         }
+        first_wave = set(waves[0])
         for agent in ready:
-            agent["status"] = "working"
+            agent["status"] = "working" if str(agent["id"]) in first_wave else "paused"
             agent["progress"] = 5
-            agent["current_step"] = "Ve frontě"
+            agent["current_step"] = "Ve frontě" if str(agent["id"]) in first_wave else "Čeká na závislosti"
             agent["current_task"] = clean_task
         current["tasks"] = (current.get("tasks", []) + [task_entry])[-50:]
         save_document(AGENTS_PATH, current)
-    for agent in ready:
-        AGENT_JOB_POOL.submit(execute_agent_job, task_id, str(agent["id"]), clean_task)
+    threading.Thread(
+        target=execute_agent_dag, args=(task_id, clean_task, waves),
+        name=f"raven-dag-{task_id[-8:]}", daemon=True,
+    ).start()
     return {"task_id": task_id, "agents": ready, "task": task_entry}
 
 
@@ -2468,6 +2548,7 @@ def command_result(result: subprocess.CompletedProcess[str], elevated: bool) -> 
 
 def run_powershell(command: str, elevated: bool) -> dict[str, Any]:
     """Spustí potvrzený příkaz; elevace vždy prochází Windows UAC."""
+    require_command_network(command, load_next_settings())
     if not elevated:
         result = subprocess.run(
             ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command],
@@ -2539,6 +2620,124 @@ def run_powershell(command: str, elevated: bool) -> dict[str, Any]:
         "output": (output or str(status.get("error", ""))).strip()[:24000],
         "execution_id": execution_id,
     }
+
+
+class FileToolInput(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    action: str = Field(min_length=2, max_length=80)
+    path: str = Field(min_length=1, max_length=4000)
+    content: str = Field(default="", max_length=1_500_000)
+    simulate: bool = False
+
+
+class BuilderToolInput(BaseModel):
+    prompt: str = Field(min_length=3, max_length=12000)
+    destination: str = Field(min_length=1, max_length=4000)
+    model: str = Field(default="automatic", max_length=160)
+    node_binary: str = Field(default="node", max_length=4000)
+
+
+class PowerShellToolInput(BaseModel):
+    command: str = Field(min_length=1, max_length=6000)
+    elevated: bool = False
+
+
+class ComputerCaptureToolInput(BaseModel):
+    label: str = Field(default="tool-observe", max_length=32)
+    hwnd: int | None = None
+    save: bool = True
+
+
+class ComputerExecuteToolInput(BaseModel):
+    hwnd: int
+    actions: list[dict[str, Any]] = Field(min_length=1, max_length=50)
+
+
+class DiagnosticsToolInput(BaseModel):
+    full: bool = False
+
+
+class KnowledgeSearchToolInput(BaseModel):
+    query: str = Field(min_length=2, max_length=500)
+    limit: int = Field(default=8, ge=1, le=30)
+
+
+TOOL_REGISTRY: ToolRegistry | None = None
+TOOL_REGISTRY_LOCK = threading.Lock()
+
+
+def get_tool_registry() -> ToolRegistry:
+    """Vytvoří jediný registr, který používá API i hlavní chatová smyčka."""
+    global TOOL_REGISTRY
+    with TOOL_REGISTRY_LOCK:
+        if TOOL_REGISTRY is not None:
+            return TOOL_REGISTRY
+        registry = ToolRegistry(ROOT / "runtime" / "tool-audit.jsonl")
+        registry.register(ToolSpec(
+            name="files.action", description="Ověřená změna souboru nebo složky",
+            input_model=FileToolInput, permission="files-write", risk="high", timeout_seconds=120,
+            requires_confirmation=True,
+            executor=lambda value: execute_file_action(value.model_dump(exclude={"simulate"}), "full", confirmed=True, simulate=value.simulate),
+            verifier=lambda output: (output.get("verified") is True, str(output.get("message", "read-back"))),
+        ))
+        registry.register(ToolSpec(
+            name="builder.create", description="Vytvoření a syntaktická kontrola vícesouborového projektu",
+            input_model=BuilderToolInput, permission="files-write", risk="high", timeout_seconds=900,
+            requires_confirmation=True,
+            executor=lambda value: build_project(
+                value.prompt, Path(value.destination),
+                lambda instruction, schema: local_model_request([
+                    {"role": "system", "content": "Jsi bezpečný Raven Builder. Vrať pouze úplný JSON podle schématu."},
+                    {"role": "user", "content": instruction},
+                ], value.model, schema, capability="coding", complexity="complex"),
+                node_binary=value.node_binary,
+            ),
+            verifier=lambda output: (bool(output.get("validation", {}).get("passed")), "syntax-and-structure-validation"),
+        ))
+        registry.register(ToolSpec(
+            name="powershell.execute", description="PowerShell s normalizovaným výstupem",
+            input_model=PowerShellToolInput, permission="terminal", risk="high", timeout_seconds=300,
+            requires_confirmation=True, executor=lambda value: run_powershell(value.command, value.elevated),
+            verifier=lambda output: (int(output.get("exit_code", 1)) == 0, f"exit={output.get('exit_code')}")
+        ))
+        registry.register(ToolSpec(
+            name="computer.capture", description="Snímek celé plochy nebo cílového okna",
+            input_model=ComputerCaptureToolInput, permission="screen-read", timeout_seconds=60,
+            executor=lambda value: COMPUTER.capture(label=value.label, save=value.save, hwnd=value.hwnd),
+            verifier=lambda output: (bool(output.get("sha256_pixels")), "pixel-sha256"),
+        ))
+        registry.register(ToolSpec(
+            name="computer.execute", description="Validované UIA, myš a klávesnice v cílovém okně",
+            input_model=ComputerExecuteToolInput, permission="computer-input", risk="high", timeout_seconds=300,
+            requires_confirmation=True, executor=lambda value: COMPUTER.execute(value.model_dump()),
+            verifier=lambda output: (output.get("success") is True, "computer-execution-result"),
+        ))
+        registry.register(ToolSpec(
+            name="diagnostics.run", description="Lokální diagnostika služeb a komponent",
+            input_model=DiagnosticsToolInput, permission="system-read", timeout_seconds=180,
+            executor=lambda value: run_diagnostics(value.full),
+            verifier=lambda output: (bool(output), "diagnostic-output"),
+        ))
+        registry.register(ToolSpec(
+            name="knowledge.search", description="Lokální FTS vyhledávání ve znalostní knihovně",
+            input_model=KnowledgeSearchToolInput, permission="files-read", timeout_seconds=60,
+            executor=lambda value: search_library(value.query, value.limit),
+            verifier=lambda output: ("results" in output, "fts-query-result"),
+        ))
+        TOOL_REGISTRY = registry
+        return registry
+
+
+def invoke_registered_tool(
+    name: str, arguments: dict[str, Any], *, permission_mode: str, confirmed: bool,
+) -> dict[str, Any]:
+    execution = get_tool_registry().execute(name, arguments, permission_mode=permission_mode, confirmed=confirmed)
+    if execution.status != "completed":
+        raise ValueError(execution.error or f"Nástroj {name} selhal.")
+    return {**execution.output, "tool_execution": {
+        "id": execution.id, "tool": execution.tool, "verified": execution.verified,
+        "evidence": execution.evidence, "duration_ms": execution.duration_ms,
+    }}
 
 
 def start_hardware_sensors_elevated() -> dict[str, Any]:
@@ -2755,6 +2954,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(load_recent_logs())
         elif request_path == "/v12/overview":
             self.send_json(feature_overview())
+        elif request_path == "/v13/tools":
+            self.send_json({"tools": get_tool_registry().catalog()})
         elif request_path == "/v12/system-profile":
             self.send_json(system_profile())
         elif request_path == "/v12/models":
@@ -2811,6 +3012,17 @@ class Handler(BaseHTTPRequestHandler):
                     float(data.get("latency_ms", 0) or 0), float(data.get("quality", 0.5) or 0.5),
                 )
                 self.send_json({"saved": True, "score": CORTEX.store.model_score(model_id, capability)})
+                return
+            if self.path == "/v13/tools/execute":
+                settings = load_settings()
+                arguments = data.get("arguments", {})
+                if not isinstance(arguments, dict):
+                    raise ValueError("Argumenty nástroje musí být objekt.")
+                self.send_json(invoke_registered_tool(
+                    str(data.get("name", "")), arguments,
+                    permission_mode=str(settings.get("permission_mode", "confirm")),
+                    confirmed=data.get("confirmed") is True,
+                ))
                 return
             if self.path == "/v13/learning/feedback":
                 self.send_json(LEARNING.add_feedback(data))
@@ -3204,7 +3416,9 @@ class Handler(BaseHTTPRequestHandler):
                 host_profile = system_profile()
                 ranked_models = CORTEX.router.rank(
                     intent_capability, available_models,
-                    float(host_profile.get("model_budget_gb", host_profile.get("ram_gb", 0)) or 0),
+                    float(host_profile.get("ram_gb", 0) or host_profile.get("model_budget_gb", 0) or 0),
+                    performance_profile=str(load_next_settings().get("performance_profile", "balanced")),
+                    complexity=brain_task.complexity.value,
                 )
                 selected_model = requested_model
                 if provider in {"local", "automatic"} and data.get("model_locked") is not True and ranked_models:
@@ -3281,17 +3495,12 @@ class Handler(BaseHTTPRequestHandler):
                             portable_node = ROOT / "runtime" / "node" / "node.exe"
                             node_binary = str(portable_node) if portable_node.is_file() else (shutil.which("node.exe") or "node")
                             def build_operation() -> dict[str, Any]:
-                                built = run_agent_stage(
-                                    "coding", prompt,
-                                    lambda: build_project(
-                                        prompt, Path(local_action["path"]),
-                                        lambda instruction, schema: local_model_request([
-                                            {"role": "system", "content": "Jsi bezpečný Raven Builder. Vrať pouze úplný JSON podle schématu."},
-                                            {"role": "user", "content": instruction},
-                                        ], selected_model, schema),
-                                        node_binary=node_binary,
-                                    ),
-                                )
+                                built = run_agent_stage("coding", prompt, lambda: invoke_registered_tool(
+                                    "builder.create", {
+                                        "prompt": prompt, "destination": str(local_action["path"]),
+                                        "model": selected_model, "node_binary": node_binary,
+                                    }, permission_mode=permission_mode, confirmed=data.get("confirmed") is True,
+                                ))
                                 size = sum(int(item.get("characters", 0)) for item in built["files"])
                                 return {"status": "created", "verified": built["validation"]["passed"],
                                                "path": built["root"], "bytes": size,
@@ -3315,18 +3524,25 @@ class Handler(BaseHTTPRequestHandler):
                     BRAIN.mark_next_for_agent(brain_task_id, "files", "running", str(local_action["path"]))
                     brain_event("execute", agent="files", tool=str(local_action["action"]), result=str(local_action["path"]))
                     if local_action["action"] != "create_application":
-                        tool_result = run_agent_stage(
-                            "files", prompt,
-                            lambda: CORTEX.run_operation(
-                                cortex_task_id, "execute",
-                                lambda: execute_file_action(
-                                    local_action,
-                                    str(settings.get("permission_mode", "confirm")),
-                                    confirmed=data.get("confirmed") is True,
-                                    simulate=data.get("simulate") is True or settings.get("simulation_mode") is True,
+                        if str(settings.get("permission_mode", "confirm")) == "confirm" and data.get("confirmed") is not True:
+                            tool_result = execute_file_action(
+                                local_action, "confirm", confirmed=False,
+                                simulate=data.get("simulate") is True or settings.get("simulation_mode") is True,
+                            )
+                        else:
+                            tool_result = run_agent_stage(
+                                "files", prompt,
+                                lambda: CORTEX.run_operation(
+                                    cortex_task_id, "execute",
+                                    lambda: invoke_registered_tool(
+                                        "files.action", {
+                                            **local_action,
+                                            "simulate": data.get("simulate") is True or settings.get("simulation_mode") is True,
+                                        }, permission_mode=str(settings.get("permission_mode", "confirm")),
+                                        confirmed=data.get("confirmed") is True,
+                                    ),
                                 ),
-                            ),
-                        )
+                            )
                     if tool_result["status"] == "confirmation_required":
                         waiting_task, confirmation_token = BRAIN.request_confirmation(brain_task_id)
                         CORTEX.store.set_status(cortex_task_id, "waiting_approval")
@@ -3396,6 +3612,7 @@ class Handler(BaseHTTPRequestHandler):
                     else:
                         model_progress(provider)
                     def model_operation() -> dict[str, Any]:
+                        model_started = time.monotonic()
                         operation = (
                             lambda: automatic_provider_request(messages, selected_model, brain_task.intent, on_progress=model_progress)
                             if provider == "automatic"
@@ -3410,6 +3627,7 @@ class Handler(BaseHTTPRequestHandler):
                             "provider": used_provider,
                             "answer": response_text,
                             "fallbacks": used_fallbacks,
+                            "latency_ms": round((time.monotonic() - model_started) * 1000, 1),
                         }
                     model_result = CORTEX.run_operation(cortex_task_id, "execute", model_operation)
                     selected_provider = str(model_result.get("provider", provider))
@@ -3505,6 +3723,12 @@ class Handler(BaseHTTPRequestHandler):
                     {"accepted": review.accepted, "provider": selected_provider, "intent": completed_task.intent.value,
                      "cortex": cortex_result["evaluation"]},
                 )
+                if selected_provider == "local" and selected_model:
+                    CORTEX.store.record_model_result(
+                        selected_model, intent_capability, review.accepted,
+                        float(model_result.get("latency_ms", 0) or 0) if not local_action else 0.0,
+                        {"low": 0.35, "medium": 0.65, "high": 0.9}.get(review.confidence, 0.35) if review.accepted else 0.0,
+                    )
                 record_task(prompt, selected_provider, selected_model, outcome_status, answer, brain_task_id)
                 if brain_chat_id:
                     try:

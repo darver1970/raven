@@ -80,6 +80,19 @@ def test_builder_validates_before_publishing_any_files(tmp_path, monkeypatch):
     assert not list(tmp_path.glob(".raven-build-*"))
 
 
+def test_builder_repairs_invalid_first_attempt_without_publishing_it(tmp_path):
+    attempts = []
+    def generate(prompt, _schema):
+        attempts.append(prompt)
+        if len(attempts) == 1:
+            return json.dumps({"name": "app", "kind": "web", "files": [{"path": "index.html", "content": "<html>broken"}]})
+        return json.dumps({"name": "app", "kind": "web", "files": [{"path": "index.html", "content": "<html><body>fixed</body></html>"}]})
+    result = build_project("Create app", tmp_path / "app", generate)
+    assert result["attempts"] == 2
+    assert "Předchozí návrh" in attempts[1]
+    assert (tmp_path / "app" / "index.html").read_text(encoding="utf-8").endswith("</html>")
+
+
 def test_web_blueprint_requires_index() -> None:
     with pytest.raises(ValueError, match="index.html"):
         parse_blueprint({"name": "x", "kind": "web", "files": [{"path": "app.js", "content": "1"}]})

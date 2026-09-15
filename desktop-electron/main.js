@@ -507,12 +507,50 @@ function windowsDrives() {
   return entries;
 }
 
+function desktopOfflineEnabled() {
+  try { return portableUpdatesOffline(); }
+  catch { return true; }
+}
+
+function isLoopbackUrl(value) {
+  try {
+    const parsed = new URL(String(value));
+    const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    return ['http:', 'https:'].includes(parsed.protocol)
+      && (host === 'localhost' || host === '::1' || /^127(?:\.\d{1,3}){3}$/.test(host));
+  } catch { return false; }
+}
+
+function isOfflineTerminalCommand(value) {
+  const text = String(value || '').toLowerCase();
+  return /(^|[\s;|&])(curl(?:\.exe)?|wget(?:\.exe)?|ssh|scp|sftp|ftp|telnet|ping|tracert|nslookup|winget|choco)(?=\s|$)/i.test(text)
+    || /\b(invoke-webrequest|invoke-restmethod|start-bitstransfer|system\.net|webclient|httpclient)\b/i.test(text)
+    || /\b(git\s+(clone|fetch|pull|push)|ollama\s+pull|pip\s+install|npm\s+(install|update)|npx\s)\b/i.test(text);
+}
+
+function shouldBlockNetworkRequest(value) {
+  if (!desktopOfflineEnabled()) return false;
+  try {
+    const parsed = new URL(String(value));
+    return ['http:', 'https:'].includes(parsed.protocol) && !isLoopbackUrl(parsed.toString());
+  } catch { return false; }
+}
+
+function installOfflineNetworkPolicy() {
+  const sessions = [session.defaultSession, session.fromPartition('persist:raven-web')];
+  for (const target of new Set(sessions)) {
+    target.webRequest.onBeforeRequest((details, callback) => callback({ cancel: shouldBlockNetworkRequest(details.url) }));
+  }
+}
+
 function safeUrl(value) {
   let text = String(value || '').trim();
-  if (!text) text = 'https://github.com/';
+  if (!text) text = desktopOfflineEnabled() ? 'about:blank' : 'https://github.com/';
+  if (text === 'about:blank') return text;
   if (!/^https?:\/\//i.test(text)) text = `https://${text}`;
   const parsed = new URL(text);
   if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('Povoleny jsou pouze HTTP a HTTPS adresy.');
+  if (desktopOfflineEnabled() && !isLoopbackUrl(parsed.toString())) throw new Error('Vzdálený web je v offline nebo bezpečném režimu zablokovaný.');
   return parsed.toString();
 }
 
@@ -592,13 +630,16 @@ function configureTab(tab) {
   wc.on('page-title-updated', event => { event.preventDefault(); update(); });
   wc.on('did-navigate', update);
   wc.on('did-navigate-in-page', update);
-  wc.setWindowOpenHandler(({ url }) => { createTab(url); return { action: 'deny' }; });
+  wc.setWindowOpenHandler(({ url }) => {
+    try { createTab(url); } catch (error) { writeLog(`browser navigation blocked ${error?.message || error}`); }
+    return { action: 'deny' };
+  });
   wc.on('will-navigate', (event, url) => {
     try { safeUrl(url); } catch { event.preventDefault(); }
   });
 }
 
-function createTab(value = 'https://github.com/') {
+function createTab(value = '') {
   const url = safeUrl(value);
   const id = `tab-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const view = new WebContentsView({ webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, partition: 'persist:raven-web', backgroundThrottling: true } });
@@ -723,6 +764,9 @@ function installHandlers() {
     if (entry.busy) throw new Error('Předchozí příkaz terminálu ještě běží.');
     const data = String(value?.data || '');
     if (!data || data.length > 20000) throw new Error('Příkaz terminálu má neplatnou délku.');
+    if (desktopOfflineEnabled() && isOfflineTerminalCommand(data)) {
+      throw new Error('Síťový příkaz je v offline nebo bezpečném režimu zablokovaný.');
+    }
     requireDesktopPermission(value, 'Spuštění příkazu');
     const executionDirectory = path.join(RUNTIME, 'executions');
     fs.mkdirSync(executionDirectory, { recursive: true });
@@ -733,6 +777,12 @@ function installHandlers() {
       RAVEN_TERMINAL_COMMAND: data,
       RAVEN_TERMINAL_CWD_FILE: cwdFile
     };
+    if (desktopOfflineEnabled()) {
+      environment.HTTP_PROXY = 'http://127.0.0.1:9';
+      environment.HTTPS_PROXY = 'http://127.0.0.1:9';
+      environment.ALL_PROXY = 'http://127.0.0.1:9';
+      environment.NO_PROXY = 'localhost,127.0.0.1,::1';
+    }
     const runner = [
       "$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new()",
       "$global:LASTEXITCODE = 0",
@@ -939,7 +989,8 @@ function installHandlers() {
   ipcMain.handle('browser:navigate', (_e, url) => { const tab = activeTab(); tab.view.webContents.loadURL(safeUrl(url)); return tabState(); });
   ipcMain.handle('browser:action', (_e, action) => {
     const wc = activeTab().view.webContents;
-    if (action === 'back' && wc.navigationHistory.canGoBack()) wc.navigationHistory.goBack();
+    if (desktopOfflineEnabled() && !isLoopbackUrl(wc.getURL()) && wc.getURL() !== 'about:blank') wc.loadURL('about:blank');
+    else if (action === 'back' && wc.navigationHistory.canGoBack()) wc.navigationHistory.goBack();
     else if (action === 'forward' && wc.navigationHistory.canGoForward()) wc.navigationHistory.goForward();
     else if (action === 'reload') wc.reload();
     else if (action === 'stop') wc.stop();
@@ -962,13 +1013,17 @@ function installHandlers() {
 }
 
 function createAuxWindow(display = '') {
-  const win = new BrowserWindow({ width: 1450, height: 900, backgroundColor: '#171715', title: 'Raven 1.2', icon: path.join(ROOT, 'desktop', 'raven.ico'), autoHideMenuBar: true, titleBarStyle: 'hidden', titleBarOverlay: { color: '#191917', symbolColor: '#bdbdb7', height: 30 }, webPreferences: { preload: path.join(__dirname, 'preload.js'), sandbox: true, contextIsolation: true } });
+  const win = new BrowserWindow({ width: 1450, height: 900, backgroundColor: '#171715', title: 'Raven 1.2', icon: path.join(ROOT, 'desktop', 'raven.ico'), autoHideMenuBar: true, titleBarStyle: 'hidden', titleBarOverlay: { color: '#191917', symbolColor: '#bdbdb7', height: 30 }, webPreferences: { preload: path.join(__dirname, 'preload.js'), sandbox: false, contextIsolation: true, nodeIntegration: false } });
   win.loadURL(display ? `${HUD_URL}&display=${encodeURIComponent(display)}` : HUD_URL);
   return win;
 }
 
 function createMainWindow() {
-  mainWindow = new BrowserWindow({ width: 1600, height: 980, minWidth: 900, minHeight: 600, show: false, backgroundColor: '#171715', title: 'Raven 1.2', icon: path.join(ROOT, 'desktop', 'raven.ico'), autoHideMenuBar: true, titleBarStyle: 'hidden', titleBarOverlay: { color: '#191917', symbolColor: '#bdbdb7', height: 30 }, webPreferences: { preload: path.join(__dirname, 'preload.js'), sandbox: true, contextIsolation: true, nodeIntegration: false } });
+  // The HUD is trusted loopback content. Electron's renderer sandbox can fail
+  // before preload initialization when the packaged app runs from removable
+  // NTFS media (startupData is null). Keep context isolation and Node disabled;
+  // untrusted browser tabs remain in their separate sandboxed WebContentsView.
+  mainWindow = new BrowserWindow({ width: 1600, height: 980, minWidth: 900, minHeight: 600, show: false, backgroundColor: '#171715', title: 'Raven 1.2', icon: path.join(ROOT, 'desktop', 'raven.ico'), autoHideMenuBar: true, titleBarStyle: 'hidden', titleBarOverlay: { color: '#191917', symbolColor: '#bdbdb7', height: 30 }, webPreferences: { preload: path.join(__dirname, 'preload.js'), sandbox: false, contextIsolation: true, nodeIntegration: false } });
   let windowRevealed = false;
   const revealMainWindow = reason => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
@@ -1025,6 +1080,7 @@ function startDesktopApplication() {
   if (desktopApplicationStarted || bootstrapInProgress) return;
   desktopApplicationStarted = true;
   app.whenReady().then(() => {
+    installOfflineNetworkPolicy();
     session.fromPartition('persist:raven-web').on('will-download', (_event, item) => {
       const safeName = path.basename(item.getFilename()).replace(/[^a-z0-9._-]/gi, '_');
       item.setSavePath(path.join(QUARANTINE, `${Date.now()}-${safeName}`));

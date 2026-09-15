@@ -87,12 +87,15 @@ def test_visual_planner_accepts_only_window_relative_coordinates(monkeypatch, tm
     screenshot = tmp_path / "mock-image.jpg"
     screenshot.write_bytes(b"mock image for mocked model")
     monkeypatch.setattr(raven_control.COMPUTER, "capture", lambda **_kwargs: {"path": str(screenshot)})
+    used_models = []
     monkeypatch.setattr(
         raven_control, "local_model_request",
-        lambda *_args: '{"actions":[{"type":"click_relative","x":320,"y":240}],"summary":"Kliknu doprostřed plátna."}',
+        lambda *_args: used_models.append(_args[1]) or '{"actions":[{"type":"click_relative","x":320,"y":240}],"summary":"Kliknu doprostřed plátna."}',
     )
     plan = raven_control.plan_computer_task("Klikni doprostřed obrazu", 123)
     assert plan["actions"][0] == {"type": "click_relative", "x": 320, "y": 240}
+    assert used_models == ["qwen3-vl:4b"]
+    assert plan["visual_input"] is True
 
 
 def test_visual_planner_rejects_coordinate_outside_window(monkeypatch, tmp_path) -> None:

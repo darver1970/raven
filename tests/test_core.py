@@ -344,6 +344,27 @@ def test_agent_runtime_never_allows_more_than_two_heavy_agents() -> None:
     assert AgentRuntime(limit=99).limit == 2
 
 
+def test_agent_dependency_waves_are_real_dag_order() -> None:
+    agents = [
+        {"id": "planner", "dependencies": []},
+        {"id": "files", "dependencies": ["planner"]},
+        {"id": "coding", "dependencies": ["planner", "files"]},
+        {"id": "tester", "dependencies": ["coding"]},
+        {"id": "reviewer", "dependencies": ["tester"]},
+    ]
+    assert raven_control.agent_dependency_waves(agents) == [
+        ["planner"], ["files"], ["coding"], ["tester"], ["reviewer"],
+    ]
+
+
+def test_agent_dependency_waves_reject_cycle() -> None:
+    with pytest.raises(ValueError, match="cyklus"):
+        raven_control.agent_dependency_waves([
+            {"id": "left", "dependencies": ["right"]},
+            {"id": "right", "dependencies": ["left"]},
+        ])
+
+
 def test_agent_runtime_is_safe_across_server_threads_and_event_loops() -> None:
     runtime = AgentRuntime(limit=2)
     observed_maximum = 0

@@ -15,9 +15,9 @@ from pydantic import BaseModel, Field
 
 
 ALLOWED_SUFFIXES = {".html", ".css", ".js", ".json", ".md", ".txt", ".py"}
-MAX_FILES = 16
+MAX_FILES = 48
 MAX_FILE_CHARS = 120_000
-MAX_TOTAL_CHARS = 500_000
+MAX_TOTAL_CHARS = 2_000_000
 
 
 class GeneratedFile(BaseModel):
@@ -111,28 +111,40 @@ def build_project(
         "Preferuj samostatnou HTML/CSS/JavaScript aplikaci bez sestavení. Každý soubor musí být úplný.\n\n"
         f"Zadání uživatele:\n{prompt[:8000]}"
     )
-    blueprint = parse_blueprint(generate(instruction, blueprint_schema()))
     destination.parent.mkdir(parents=True, exist_ok=True)
-    written: list[dict[str, Any]] = []
-    # Validate away from the destination. Publishing a directory on the same
-    # volume avoids exposing a partially written project on ordinary failures.
-    with tempfile.TemporaryDirectory(prefix=".raven-build-", dir=destination.parent) as temporary_root:
-        stage = Path(temporary_root)
-        for item in blueprint.files:
-            target = stage.joinpath(*PurePosixPath(item.path).parts)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(item.content, encoding="utf-8", newline="\n")
-            written.append({"path": item.path, "sha256": hashlib.sha256(target.read_bytes()).hexdigest(), "characters": len(item.content)})
-        tests = validate_project(stage, blueprint, node_binary=node_binary)
-        if not tests["passed"]:
-            raise ValueError("Vygenerovaný projekt neprošel kontrolou: " + "; ".join(t["message"] for t in tests["checks"] if not t["passed"]))
-        if destination.exists():
-            if not destination.is_dir() or any(destination.iterdir()):
-                raise ValueError("Cílová projektová složka se během generování změnila; nic nebylo přepsáno.")
-            # rmdir refuses a directory that became non-empty concurrently.
-            destination.rmdir()
-        stage.rename(destination)
-    return {"status": "created", "name": blueprint.name, "kind": blueprint.kind, "root": str(destination), "files": written, "validation": tests}
+    last_error = ""
+    for attempt in range(1, 4):
+        current_instruction = instruction
+        if last_error:
+            current_instruction += (
+                "\n\nPředchozí návrh neprošel bezpečnou kontrolou. Oprav příčinu a vrať celý projekt znovu. "
+                f"Chyba: {last_error[:1500]}"
+            )
+        try:
+            blueprint = parse_blueprint(generate(current_instruction, blueprint_schema()))
+            written: list[dict[str, Any]] = []
+            # Validace probíhá mimo cíl. Neplatný pokus nikdy nevystaví částečný projekt.
+            with tempfile.TemporaryDirectory(prefix=".raven-build-", dir=destination.parent) as temporary_root:
+                stage = Path(temporary_root)
+                for item in blueprint.files:
+                    target = stage.joinpath(*PurePosixPath(item.path).parts)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(item.content, encoding="utf-8", newline="\n")
+                    written.append({"path": item.path, "sha256": hashlib.sha256(target.read_bytes()).hexdigest(), "characters": len(item.content)})
+                tests = validate_project(stage, blueprint, node_binary=node_binary)
+                if not tests["passed"]:
+                    raise ValueError("Vygenerovaný projekt neprošel kontrolou: " + "; ".join(t["message"] for t in tests["checks"] if not t["passed"]))
+                if destination.exists():
+                    if not destination.is_dir() or any(destination.iterdir()):
+                        raise ValueError("Cílová projektová složka se během generování změnila; nic nebylo přepsáno.")
+                    destination.rmdir()
+                stage.rename(destination)
+            return {"status": "created", "name": blueprint.name, "kind": blueprint.kind, "root": str(destination), "files": written, "validation": tests, "attempts": attempt}
+        except ValueError as error:
+            last_error = str(error)
+            if "během generování změnila" in last_error or "není prázdná" in last_error:
+                raise
+    raise ValueError(last_error or "Builder nevytvořil platný projekt.")
 
 
 def validate_project(root: Path, blueprint: ApplicationBlueprint, *, node_binary: str = "node") -> dict[str, Any]:
